@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { useListenerSession } from "@/hooks/useSession";
 
 interface ListenerViewProps {
   onBack: () => void;
@@ -10,24 +11,79 @@ interface ListenerViewProps {
 }
 
 const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
-  const [isConnected, setIsConnected] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [inputCode, setInputCode] = useState(sessionId || "");
   const [volume, setVolume] = useState(80);
   const [isMuted, setIsMuted] = useState(false);
-  const [inputCode, setInputCode] = useState(sessionId || "");
+  const [localIsPlaying, setLocalIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const lastSyncRef = useRef<string | null>(null);
 
-  const handleConnect = () => {
+  const { session, isConnected, isLoading, connect } = useListenerSession(inputCode);
+
+  const handleConnect = async () => {
     if (inputCode.length > 0) {
-      setIsConnected(true);
+      await connect();
     }
-  };
-
-  const togglePlay = () => {
-    setIsPlaying(!isPlaying);
   };
 
   const toggleMute = () => {
     setIsMuted(!isMuted);
+    if (audioRef.current) {
+      audioRef.current.muted = !isMuted;
+    }
+  };
+
+  // Handle volume changes
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = isMuted ? 0 : volume / 100;
+    }
+  }, [volume, isMuted]);
+
+  // Sync playback with host
+  useEffect(() => {
+    if (!session || !audioRef.current || !session.audio_url) return;
+    
+    // Only sync if the sync timestamp has changed
+    if (lastSyncRef.current === session.last_sync_at) return;
+    lastSyncRef.current = session.last_sync_at;
+
+    const audio = audioRef.current;
+    const targetTimeSeconds = session.current_time_ms / 1000;
+    
+    // Calculate time drift compensation
+    const timeSinceSync = (Date.now() - new Date(session.last_sync_at).getTime()) / 1000;
+    const compensatedTime = session.is_playing 
+      ? targetTimeSeconds + timeSinceSync 
+      : targetTimeSeconds;
+
+    // Only seek if we're more than 0.5 seconds off
+    const currentDiff = Math.abs(audio.currentTime - compensatedTime);
+    if (currentDiff > 0.5) {
+      audio.currentTime = compensatedTime;
+    }
+
+    // Handle play/pause
+    if (session.is_playing && audio.paused) {
+      audio.play().catch(err => console.log('Autoplay blocked:', err));
+      setLocalIsPlaying(true);
+    } else if (!session.is_playing && !audio.paused) {
+      audio.pause();
+      setLocalIsPlaying(false);
+    }
+  }, [session]);
+
+  // Handle manual play/pause toggle
+  const togglePlay = () => {
+    if (!audioRef.current) return;
+    
+    if (localIsPlaying) {
+      audioRef.current.pause();
+      setLocalIsPlaying(false);
+    } else {
+      audioRef.current.play().catch(err => console.log('Play blocked:', err));
+      setLocalIsPlaying(true);
+    }
   };
 
   return (
@@ -77,9 +133,13 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 size="xl"
                 className="w-full"
                 onClick={handleConnect}
-                disabled={inputCode.length === 0}
+                disabled={inputCode.length === 0 || isLoading}
               >
-                Connect
+                {isLoading ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-foreground"></div>
+                ) : (
+                  'Connect'
+                )}
               </Button>
             </div>
 
@@ -101,24 +161,38 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 Connected
               </div>
               <h2 className="font-display text-xl font-bold text-foreground">
-                Session: {inputCode}
+                Session: {session?.code}
               </h2>
+              {session?.audio_filename && (
+                <p className="text-muted-foreground text-sm mt-1">
+                  {session.audio_filename}
+                </p>
+              )}
             </div>
+
+            {/* Hidden Audio Element */}
+            {session?.audio_url && (
+              <audio
+                ref={audioRef}
+                src={session.audio_url}
+                preload="auto"
+              />
+            )}
 
             {/* Now Playing */}
             <div className="text-center py-8">
               <motion.div
                 animate={{
-                  scale: isPlaying ? [1, 1.05, 1] : 1,
+                  scale: localIsPlaying ? [1, 1.05, 1] : 1,
                 }}
                 transition={{
                   duration: 2,
-                  repeat: isPlaying ? Infinity : 0,
+                  repeat: localIsPlaying ? Infinity : 0,
                   ease: "easeInOut",
                 }}
                 className="w-32 h-32 mx-auto mb-6 rounded-full bg-gradient-to-br from-primary/20 to-glow-secondary/20 flex items-center justify-center border border-primary/30 cinema-glow"
               >
-                {isPlaying ? (
+                {localIsPlaying ? (
                   <div className="flex items-end gap-1 h-8">
                     {[1, 2, 3, 4, 5].map((bar) => (
                       <motion.div
@@ -141,7 +215,13 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               </motion.div>
 
               <p className="text-muted-foreground text-sm">
-                {isPlaying ? "Audio streaming..." : "Ready to play"}
+                {!session?.audio_url 
+                  ? "Waiting for host to upload audio..." 
+                  : localIsPlaying 
+                    ? "Audio streaming..." 
+                    : session?.is_playing 
+                      ? "Tap play to sync with host" 
+                      : "Waiting for host to start..."}
               </p>
             </div>
 
@@ -149,9 +229,10 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             <div className="flex justify-center mb-8">
               <button
                 onClick={togglePlay}
-                className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-glow-secondary flex items-center justify-center shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40 transition-all hover:scale-105 active:scale-95"
+                disabled={!session?.audio_url}
+                className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-glow-secondary flex items-center justify-center shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isPlaying ? (
+                {localIsPlaying ? (
                   <Pause className="w-8 h-8 text-primary-foreground" />
                 ) : (
                   <Play className="w-8 h-8 text-primary-foreground ml-1" />
