@@ -1,44 +1,79 @@
-import { useState, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useRef, useEffect } from "react";
+import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
-import { ArrowLeft, Upload, Play, Pause, Volume2, Copy, Check, Radio } from "lucide-react";
+import { ArrowLeft, Upload, Play, Pause, Volume2, Copy, Check, Radio, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { useHostSession } from "@/hooks/useSession";
 
 interface HostSessionProps {
   onBack: () => void;
 }
 
 const HostSession = ({ onBack }: HostSessionProps) => {
-  const [sessionId] = useState(() => Math.random().toString(36).substring(2, 10).toUpperCase());
+  const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState } = useHostSession();
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const sessionUrl = `${window.location.origin}/listen/${sessionId}`;
+  // Create session on mount
+  useEffect(() => {
+    createSession();
+  }, [createSession]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const sessionUrl = session ? `${window.location.origin}/listen/${session.code}` : '';
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (file && session) {
       setAudioFile(file);
-      const url = URL.createObjectURL(file);
-      setAudioUrl(url);
+      setIsUploading(true);
+      
+      // Upload to storage
+      const url = await uploadAudio(file);
+      
+      if (url) {
+        setAudioUrl(url);
+      } else {
+        // Fallback to local URL if upload fails
+        const localUrl = URL.createObjectURL(file);
+        setAudioUrl(localUrl);
+      }
+      setIsUploading(false);
     }
   };
 
-  const togglePlayback = () => {
+  const togglePlayback = async () => {
     if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
+      const newIsPlaying = !isPlaying;
+      const currentTimeMs = Math.floor(audioRef.current.currentTime * 1000);
+      
+      if (newIsPlaying) {
         audioRef.current.play();
+        // Start sync interval
+        syncIntervalRef.current = setInterval(() => {
+          if (audioRef.current) {
+            updatePlaybackState(true, Math.floor(audioRef.current.currentTime * 1000));
+          }
+        }, 1000);
+      } else {
+        audioRef.current.pause();
+        // Stop sync interval
+        if (syncIntervalRef.current) {
+          clearInterval(syncIntervalRef.current);
+          syncIntervalRef.current = null;
+        }
       }
-      setIsPlaying(!isPlaying);
+      
+      setIsPlaying(newIsPlaying);
+      await updatePlaybackState(newIsPlaying, currentTimeMs);
     }
   };
 
@@ -54,6 +89,15 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     }
   };
 
+  const handleEnded = async () => {
+    setIsPlaying(false);
+    if (syncIntervalRef.current) {
+      clearInterval(syncIntervalRef.current);
+      syncIntervalRef.current = null;
+    }
+    await updatePlaybackState(false, 0);
+  };
+
   const formatTime = (time: number) => {
     const mins = Math.floor(time / 60);
     const secs = Math.floor(time % 60);
@@ -66,6 +110,23 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     toast.success("Link copied to clipboard!");
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+      }
+    };
+  }, []);
+
+  if (isLoading && !session) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -95,7 +156,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </div>
 
             <h2 className="font-display text-2xl font-bold text-foreground mb-2">
-              Session: {sessionId}
+              Session: {session?.code}
             </h2>
             <p className="text-muted-foreground text-sm mb-6">
               Share this QR code with your audience
@@ -124,6 +185,14 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
               </Button>
             </div>
+
+            {/* Listener Count */}
+            <div className="mt-6 flex items-center justify-center gap-2 text-muted-foreground">
+              <Users className="w-4 h-4" />
+              <span className="text-sm">
+                {listeners.length} listener{listeners.length !== 1 ? 's' : ''} connected
+              </span>
+            </div>
           </motion.div>
 
           {/* Right: Audio Controls */}
@@ -138,15 +207,25 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </h3>
 
             {!audioFile ? (
-              <label className="flex flex-col items-center justify-center h-48 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors">
-                <Upload className="w-10 h-10 text-muted-foreground mb-3" />
-                <span className="text-muted-foreground text-sm">Click to upload audio file</span>
-                <span className="text-muted-foreground text-xs mt-1">MP3, WAV, AAC</span>
+              <label className={`flex flex-col items-center justify-center h-48 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
+                {isUploading ? (
+                  <>
+                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div>
+                    <span className="text-muted-foreground text-sm">Uploading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-10 h-10 text-muted-foreground mb-3" />
+                    <span className="text-muted-foreground text-sm">Click to upload audio file</span>
+                    <span className="text-muted-foreground text-xs mt-1">MP3, WAV, AAC</span>
+                  </>
+                )}
                 <input
                   type="file"
                   accept="audio/*"
                   className="hidden"
                   onChange={handleFileChange}
+                  disabled={isUploading}
                 />
               </label>
             ) : (
@@ -208,7 +287,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                     src={audioUrl}
                     onTimeUpdate={handleTimeUpdate}
                     onLoadedMetadata={handleLoadedMetadata}
-                    onEnded={() => setIsPlaying(false)}
+                    onEnded={handleEnded}
                   />
                 )}
               </div>
@@ -221,7 +300,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 <li>Upload your movie's audio track</li>
                 <li>Display the QR code to your audience</li>
                 <li>Press play when your video starts</li>
-                <li>Viewers hear audio through their devices</li>
+                <li>Viewers hear synced audio on their devices</li>
               </ol>
             </div>
           </motion.div>

@@ -14,13 +14,89 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      session_listeners: {
+        Row: {
+          connected_at: string
+          id: string
+          last_ping_at: string
+          listener_token: string
+          session_id: string
+        }
+        Insert: {
+          connected_at?: string
+          id?: string
+          last_ping_at?: string
+          listener_token: string
+          session_id: string
+        }
+        Update: {
+          connected_at?: string
+          id?: string
+          last_ping_at?: string
+          listener_token?: string
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "session_listeners_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sessions: {
+        Row: {
+          audio_filename: string | null
+          audio_url: string | null
+          code: string
+          created_at: string
+          current_time_ms: number
+          expires_at: string
+          host_id: string | null
+          id: string
+          is_playing: boolean
+          last_sync_at: string
+          title: string | null
+          updated_at: string
+        }
+        Insert: {
+          audio_filename?: string | null
+          audio_url?: string | null
+          code: string
+          created_at?: string
+          current_time_ms?: number
+          expires_at?: string
+          host_id?: string | null
+          id?: string
+          is_playing?: boolean
+          last_sync_at?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Update: {
+          audio_filename?: string | null
+          audio_url?: string | null
+          code?: string
+          created_at?: string
+          current_time_ms?: number
+          expires_at?: string
+          host_id?: string | null
+          id?: string
+          is_playing?: boolean
+          last_sync_at?: string
+          title?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      generate_session_code: { Args: never; Returns: string }
     }
     Enums: {
       [_ in never]: never
