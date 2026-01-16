@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
-import { ArrowLeft, Upload, Play, Pause, Volume2, Copy, Check, Radio, Users } from "lucide-react";
+import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useHostSession } from "@/hooks/useSession";
 
@@ -13,14 +12,16 @@ interface HostSessionProps {
 
 const HostSession = ({ onBack }: HostSessionProps) => {
   const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState } = useHostSession();
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Create session on mount
@@ -33,38 +34,41 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && session) {
-      setAudioFile(file);
+      setVideoFile(file);
       setIsUploading(true);
       
-      // Upload to storage
-      const url = await uploadAudio(file);
+      // Create local URL for video playback
+      const localUrl = URL.createObjectURL(file);
+      setVideoUrl(localUrl);
       
-      if (url) {
-        setAudioUrl(url);
-      } else {
-        // Fallback to local URL if upload fails
-        const localUrl = URL.createObjectURL(file);
-        setAudioUrl(localUrl);
+      // Extract audio and upload it
+      // For now, we'll use the video's audio track directly
+      // The video element will play locally, and we sync the audio URL
+      const audioUrl = await uploadAudio(file);
+      
+      if (!audioUrl) {
+        toast.info("Video loaded locally. Listeners will sync with your playback.");
       }
+      
       setIsUploading(false);
     }
   };
 
   const togglePlayback = async () => {
-    if (audioRef.current) {
+    if (videoRef.current) {
       const newIsPlaying = !isPlaying;
-      const currentTimeMs = Math.floor(audioRef.current.currentTime * 1000);
+      const currentTimeMs = Math.floor(videoRef.current.currentTime * 1000);
       
       if (newIsPlaying) {
-        audioRef.current.play();
+        videoRef.current.play();
         // Start sync interval
         syncIntervalRef.current = setInterval(() => {
-          if (audioRef.current) {
-            updatePlaybackState(true, Math.floor(audioRef.current.currentTime * 1000));
+          if (videoRef.current) {
+            updatePlaybackState(true, Math.floor(videoRef.current.currentTime * 1000));
           }
         }, 1000);
       } else {
-        audioRef.current.pause();
+        videoRef.current.pause();
         // Stop sync interval
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current);
@@ -78,14 +82,14 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   };
 
   const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
     }
   };
 
   const handleLoadedMetadata = () => {
-    if (audioRef.current) {
-      setDuration(audioRef.current.duration);
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
     }
   };
 
@@ -111,6 +115,28 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+    
+    if (!document.fullscreenElement) {
+      await containerRef.current.requestFullscreen();
+      setIsFullscreen(true);
+    } else {
+      await document.exitFullscreen();
+      setIsFullscreen(false);
+    }
+  };
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -128,6 +154,154 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     );
   }
 
+  // Theater mode when video is loaded
+  if (videoFile && videoUrl) {
+    return (
+      <div 
+        ref={containerRef}
+        className={`min-h-screen bg-black flex ${isFullscreen ? 'p-0' : 'p-4'}`}
+      >
+        {/* Video Area - Takes most of the screen */}
+        <div className="flex-1 flex items-center justify-center relative">
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            className="max-h-full max-w-full object-contain"
+            onTimeUpdate={handleTimeUpdate}
+            onLoadedMetadata={handleLoadedMetadata}
+            onEnded={handleEnded}
+            onClick={togglePlayback}
+            playsInline
+          />
+          
+          {/* Play/Pause overlay */}
+          {!isPlaying && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer"
+              onClick={togglePlayback}
+            >
+              <div className="w-24 h-24 rounded-full bg-primary/80 flex items-center justify-center shadow-2xl">
+                <Play className="w-12 h-12 text-primary-foreground ml-2" />
+              </div>
+            </motion.div>
+          )}
+
+          {/* Bottom controls bar */}
+          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+            <div className="flex items-center gap-4">
+              {/* Progress bar */}
+              <div className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden cursor-pointer"
+                onClick={(e) => {
+                  if (videoRef.current) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const percent = (e.clientX - rect.left) / rect.width;
+                    videoRef.current.currentTime = percent * duration;
+                  }
+                }}
+              >
+                <div 
+                  className="h-full bg-primary"
+                  style={{ width: `${(currentTime / duration) * 100 || 0}%` }}
+                />
+              </div>
+              
+              {/* Time */}
+              <span className="text-white text-sm font-mono">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </span>
+              
+              {/* Play/Pause button */}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={togglePlayback}
+                className="text-white hover:bg-white/20"
+              >
+                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+              </Button>
+              
+              {/* Fullscreen toggle */}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleFullscreen}
+                className="text-white hover:bg-white/20"
+              >
+                {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Back button (top left, only when not fullscreen or hovering) */}
+          {!isFullscreen && (
+            <Button 
+              variant="ghost" 
+              onClick={onBack} 
+              className="absolute top-4 left-4 text-white hover:bg-white/20"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back
+            </Button>
+          )}
+        </div>
+
+        {/* QR Code Sidebar */}
+        <div className={`flex flex-col items-center justify-center bg-background/95 backdrop-blur ${isFullscreen ? 'w-64 p-4' : 'w-72 p-6 rounded-2xl ml-4'}`}>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
+            <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
+            Session Live
+          </div>
+
+          <h2 className="font-display text-lg font-bold text-foreground mb-1 text-center">
+            Scan to Listen
+          </h2>
+          <p className="text-muted-foreground text-xs mb-4 text-center">
+            Session: {session?.code}
+          </p>
+
+          {/* QR Code */}
+          <div className="bg-white p-4 rounded-xl mb-4">
+            <QRCodeSVG
+              value={sessionUrl}
+              size={160}
+              level="H"
+              includeMargin={false}
+              bgColor="#ffffff"
+              fgColor="#000000"
+            />
+          </div>
+
+          {/* Listener count */}
+          <div className="flex items-center gap-2 text-muted-foreground mb-4">
+            <Users className="w-4 h-4" />
+            <span className="text-sm">
+              {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {/* Copy link button */}
+          <Button
+            variant="cinema"
+            size="sm"
+            onClick={copyLink}
+            className="w-full"
+          >
+            {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+            {copied ? 'Copied!' : 'Copy Link'}
+          </Button>
+
+          {/* Instructions */}
+          <div className="mt-4 text-xs text-muted-foreground text-center">
+            <p>Point your phone camera at the QR code to get audio</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Upload view (no video yet)
   return (
     <motion.div
       initial={{ opacity: 0, x: 50 }}
@@ -135,176 +309,66 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       exit={{ opacity: 0, x: -50 }}
       className="min-h-screen py-10 px-4"
     >
-      <div className="container max-w-4xl mx-auto">
+      <div className="container max-w-2xl mx-auto">
         {/* Header */}
         <Button variant="ghost" onClick={onBack} className="mb-8">
           <ArrowLeft className="w-4 h-4 mr-2" />
           Back
         </Button>
 
-        <div className="grid md:grid-cols-2 gap-8">
-          {/* Left: QR Code & Session Info */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="cinema-card rounded-3xl p-8 border border-border text-center"
-          >
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-6">
-              <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
-              Session Live
-            </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="cinema-card rounded-3xl p-8 border border-border text-center"
+        >
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-6">
+            <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
+            Session: {session?.code}
+          </div>
 
-            <h2 className="font-display text-2xl font-bold text-foreground mb-2">
-              Session: {session?.code}
-            </h2>
-            <p className="text-muted-foreground text-sm mb-6">
-              Share this QR code with your audience
-            </p>
+          <h2 className="font-display text-2xl font-bold text-foreground mb-2">
+            Upload Your Movie
+          </h2>
+          <p className="text-muted-foreground text-sm mb-8">
+            Upload the video file you want to project. The audio will be shared with your audience.
+          </p>
 
-            {/* QR Code */}
-            <div className="bg-foreground p-6 rounded-2xl inline-block mb-6 cinema-glow">
-              <QRCodeSVG
-                value={sessionUrl}
-                size={200}
-                level="H"
-                includeMargin={false}
-                bgColor="hsl(40 20% 95%)"
-                fgColor="hsl(240 10% 4%)"
-              />
-            </div>
-
-            {/* Copy Link */}
-            <div className="flex gap-2">
-              <Input
-                value={sessionUrl}
-                readOnly
-                className="bg-secondary/50 border-border text-sm"
-              />
-              <Button variant="cinema" size="icon" onClick={copyLink}>
-                {copied ? <Check className="w-4 h-4 text-primary" /> : <Copy className="w-4 h-4" />}
-              </Button>
-            </div>
-
-            {/* Listener Count */}
-            <div className="mt-6 flex items-center justify-center gap-2 text-muted-foreground">
-              <Users className="w-4 h-4" />
-              <span className="text-sm">
-                {listeners.length} listener{listeners.length !== 1 ? 's' : ''} connected
-              </span>
-            </div>
-          </motion.div>
-
-          {/* Right: Audio Controls */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="cinema-card rounded-3xl p-8 border border-border"
-          >
-            <h3 className="font-display text-xl font-bold text-foreground mb-6">
-              Audio Source
-            </h3>
-
-            {!audioFile ? (
-              <label className={`flex flex-col items-center justify-center h-48 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
-                {isUploading ? (
-                  <>
-                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div>
-                    <span className="text-muted-foreground text-sm">Uploading...</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-10 h-10 text-muted-foreground mb-3" />
-                    <span className="text-muted-foreground text-sm">Click to upload audio file</span>
-                    <span className="text-muted-foreground text-xs mt-1">MP3, WAV, AAC</span>
-                  </>
-                )}
-                <input
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  onChange={handleFileChange}
-                  disabled={isUploading}
-                />
-              </label>
+          <label className={`flex flex-col items-center justify-center h-64 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
+            {isUploading ? (
+              <>
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
+                <span className="text-muted-foreground">Processing video...</span>
+              </>
             ) : (
-              <div className="space-y-6">
-                {/* File Info */}
-                <div className="flex items-center gap-3 p-4 bg-secondary/50 rounded-xl">
-                  <div className="w-12 h-12 rounded-lg bg-primary/20 flex items-center justify-center">
-                    <Volume2 className="w-6 h-6 text-primary" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-foreground truncate">{audioFile.name}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {(audioFile.size / (1024 * 1024)).toFixed(1)} MB
-                    </p>
-                  </div>
-                </div>
-
-                {/* Progress Bar */}
-                <div className="space-y-2">
-                  <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                    <motion.div
-                      className="h-full bg-gradient-to-r from-primary to-glow-secondary"
-                      style={{ width: `${(currentTime / duration) * 100 || 0}%` }}
-                      transition={{ duration: 0.1 }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{formatTime(currentTime)}</span>
-                    <span>{formatTime(duration)}</span>
-                  </div>
-                </div>
-
-                {/* Play Controls */}
-                <div className="flex justify-center">
-                  <Button
-                    variant="hero"
-                    size="lg"
-                    onClick={togglePlayback}
-                    className="w-40"
-                  >
-                    {isPlaying ? (
-                      <>
-                        <Pause className="w-5 h-5" />
-                        Pause
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-5 h-5" />
-                        Start
-                      </>
-                    )}
-                  </Button>
-                </div>
-
-                {/* Hidden Audio Element */}
-                {audioUrl && (
-                  <audio
-                    ref={audioRef}
-                    src={audioUrl}
-                    onTimeUpdate={handleTimeUpdate}
-                    onLoadedMetadata={handleLoadedMetadata}
-                    onEnded={handleEnded}
-                  />
-                )}
-              </div>
+              <>
+                <Upload className="w-12 h-12 text-muted-foreground mb-4" />
+                <span className="text-foreground font-medium">Click to upload video</span>
+                <span className="text-muted-foreground text-sm mt-1">MP4, WebM, MOV</span>
+                <span className="text-muted-foreground text-xs mt-4">
+                  The video will play on this screen while audio streams to phones
+                </span>
+              </>
             )}
+            <input
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={handleFileChange}
+              disabled={isUploading}
+            />
+          </label>
 
-            {/* Instructions */}
-            <div className="mt-8 p-4 rounded-xl bg-muted/30 border border-border">
-              <h4 className="text-sm font-medium text-foreground mb-2">How it works</h4>
-              <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-                <li>Upload your movie's audio track</li>
-                <li>Display the QR code to your audience</li>
-                <li>Press play when your video starts</li>
-                <li>Viewers hear synced audio on their devices</li>
-              </ol>
-            </div>
-          </motion.div>
-        </div>
+          {/* Instructions */}
+          <div className="mt-8 p-4 rounded-xl bg-muted/30 border border-border text-left">
+            <h4 className="text-sm font-medium text-foreground mb-2">How it works</h4>
+            <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
+              <li>Upload your movie file</li>
+              <li>The video displays on this screen for projection</li>
+              <li>Audience scans the QR code with their phones</li>
+              <li>They hear synced audio through their headphones</li>
+            </ol>
+          </div>
+        </motion.div>
       </div>
     </motion.div>
   );
