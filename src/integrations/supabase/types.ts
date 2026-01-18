@@ -108,7 +108,35 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      session_listeners_public: {
+        Row: {
+          connected_at: string | null
+          id: string | null
+          last_ping_at: string | null
+          session_id: string | null
+        }
+        Insert: {
+          connected_at?: string | null
+          id?: string | null
+          last_ping_at?: string | null
+          session_id?: string | null
+        }
+        Update: {
+          connected_at?: string | null
+          id?: string | null
+          last_ping_at?: string | null
+          session_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "session_listeners_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       generate_session_code: { Args: never; Returns: string }

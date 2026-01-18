@@ -34,7 +34,6 @@ export interface Session {
 export interface SessionListener {
   id: string;
   session_id: string;
-  listener_token: string;
   connected_at: string;
   last_ping_at: string;
 }
@@ -261,24 +260,24 @@ export function useHostSession() {
           filter: `session_id=eq.${session.id}`,
         },
         async () => {
-          // Refetch listeners on any change
+          // Refetch listeners from public view (excludes tokens)
           const { data } = await supabase
-            .from('session_listeners')
-            .select('*')
+            .from('session_listeners_public' as any)
+            .select('id, session_id, connected_at, last_ping_at')
             .eq('session_id', session.id);
           
-          setListeners((data || []) as SessionListener[]);
+          setListeners((data as unknown as SessionListener[]) || []);
         }
       )
       .subscribe();
 
-    // Initial fetch
+    // Initial fetch from public view (excludes tokens)
     supabase
-      .from('session_listeners')
-      .select('*')
+      .from('session_listeners_public' as any)
+      .select('id, session_id, connected_at, last_ping_at')
       .eq('session_id', session.id)
       .then(({ data }) => {
-        setListeners((data || []) as SessionListener[]);
+        setListeners((data as unknown as SessionListener[]) || []);
       });
 
     return () => {
