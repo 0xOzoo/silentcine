@@ -49,6 +49,7 @@ export type Database = {
       sessions: {
         Row: {
           audio_filename: string | null
+          audio_tracks: Json | null
           audio_url: string | null
           code: string
           created_at: string
@@ -58,11 +59,16 @@ export type Database = {
           id: string
           is_playing: boolean
           last_sync_at: string
+          selected_audio_track: number | null
+          selected_subtitle_track: number | null
+          subtitle_tracks: Json | null
           title: string | null
           updated_at: string
+          video_url: string | null
         }
         Insert: {
           audio_filename?: string | null
+          audio_tracks?: Json | null
           audio_url?: string | null
           code: string
           created_at?: string
@@ -72,11 +78,16 @@ export type Database = {
           id?: string
           is_playing?: boolean
           last_sync_at?: string
+          selected_audio_track?: number | null
+          selected_subtitle_track?: number | null
+          subtitle_tracks?: Json | null
           title?: string | null
           updated_at?: string
+          video_url?: string | null
         }
         Update: {
           audio_filename?: string | null
+          audio_tracks?: Json | null
           audio_url?: string | null
           code?: string
           created_at?: string
@@ -86,8 +97,12 @@ export type Database = {
           id?: string
           is_playing?: boolean
           last_sync_at?: string
+          selected_audio_track?: number | null
+          selected_subtitle_track?: number | null
+          subtitle_tracks?: Json | null
           title?: string | null
           updated_at?: string
+          video_url?: string | null
         }
         Relationships: []
       }

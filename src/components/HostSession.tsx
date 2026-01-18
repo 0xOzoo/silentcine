@@ -1,17 +1,18 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
-import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize } from "lucide-react";
+import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { useHostSession } from "@/hooks/useSession";
+import { useHostSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
+import PiPQRCode from "./PiPQRCode";
 
 interface HostSessionProps {
   onBack: () => void;
 }
 
 const HostSession = ({ onBack }: HostSessionProps) => {
-  const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState } = useHostSession();
+  const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState, updateVideoInfo } = useHostSession();
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -20,6 +21,8 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -30,6 +33,52 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   }, [createSession]);
 
   const sessionUrl = session ? `${window.location.origin}/listen/${session.code}` : '';
+
+  // Extract tracks from video element
+  const extractTracks = (video: HTMLVideoElement): { audioTracks: AudioTrack[], subtitleTracks: SubtitleTrack[] } => {
+    const audioTracks: AudioTrack[] = [];
+    const subtitleTracks: SubtitleTrack[] = [];
+    
+    // Extract audio tracks if available
+    // @ts-ignore - audioTracks is not in all browsers
+    if (video.audioTracks) {
+      // @ts-ignore
+      for (let i = 0; i < video.audioTracks.length; i++) {
+        // @ts-ignore
+        const track = video.audioTracks[i];
+        audioTracks.push({
+          index: i,
+          label: track.label || `Audio ${i + 1}`,
+          language: track.language || 'unknown',
+        });
+      }
+    }
+    
+    // Add default track if none found
+    if (audioTracks.length === 0) {
+      audioTracks.push({
+        index: 0,
+        label: 'Default Audio',
+        language: 'unknown',
+      });
+    }
+    
+    // Extract text tracks (subtitles/captions)
+    if (video.textTracks) {
+      for (let i = 0; i < video.textTracks.length; i++) {
+        const track = video.textTracks[i];
+        if (track.kind === 'subtitles' || track.kind === 'captions') {
+          subtitleTracks.push({
+            index: i,
+            label: track.label || `Subtitle ${i + 1}`,
+            language: track.language || 'unknown',
+          });
+        }
+      }
+    }
+    
+    return { audioTracks, subtitleTracks };
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -42,8 +91,6 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       setVideoUrl(localUrl);
       
       // Extract audio and upload it
-      // For now, we'll use the video's audio track directly
-      // The video element will play locally, and we sync the audio URL
       const audioUrl = await uploadAudio(file);
       
       if (!audioUrl) {
@@ -51,6 +98,34 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       }
       
       setIsUploading(false);
+    }
+  };
+
+  const handleUrlSubmit = async () => {
+    if (!urlInput.trim() || !session) return;
+    
+    setIsUploading(true);
+    setVideoUrl(urlInput.trim());
+    
+    // Update session with video URL
+    await updateVideoInfo(urlInput.trim(), [], []);
+    
+    toast.success("Video URL loaded!");
+    setIsUploading(false);
+    setShowUrlInput(false);
+    setUrlInput("");
+  };
+
+  // Handle video metadata load to extract tracks
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+      
+      // Extract and save tracks
+      const { audioTracks, subtitleTracks } = extractTracks(videoRef.current);
+      if (session && videoUrl) {
+        updateVideoInfo(videoUrl, audioTracks, subtitleTracks);
+      }
     }
   };
 
@@ -84,12 +159,6 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-    }
-  };
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration);
     }
   };
 
@@ -155,7 +224,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   }
 
   // Theater mode when video is loaded
-  if (videoFile && videoUrl) {
+  if (videoUrl) {
     return (
       <div 
         ref={containerRef}
@@ -172,6 +241,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             onEnded={handleEnded}
             onClick={togglePlayback}
             playsInline
+            crossOrigin="anonymous"
           />
           
           {/* Play/Pause overlay */}
@@ -234,7 +304,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </div>
           </div>
 
-          {/* Back button (top left, only when not fullscreen or hovering) */}
+          {/* Back button (top left, only when not fullscreen) */}
           {!isFullscreen && (
             <Button 
               variant="ghost" 
@@ -281,16 +351,21 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </span>
           </div>
 
-          {/* Copy link button */}
-          <Button
-            variant="cinema"
-            size="sm"
-            onClick={copyLink}
-            className="w-full"
-          >
-            {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-            {copied ? 'Copied!' : 'Copy Link'}
-          </Button>
+          {/* Action buttons */}
+          <div className="flex flex-col gap-2 w-full">
+            <Button
+              variant="cinema"
+              size="sm"
+              onClick={copyLink}
+              className="w-full"
+            >
+              {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+              {copied ? 'Copied!' : 'Copy Link'}
+            </Button>
+            
+            {/* PiP QR Code */}
+            <PiPQRCode url={sessionUrl} sessionCode={session?.code || ''} />
+          </div>
 
           {/* Instructions */}
           <div className="mt-4 text-xs text-muted-foreground text-center">
@@ -330,39 +405,89 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             Upload Your Movie
           </h2>
           <p className="text-muted-foreground text-sm mb-8">
-            Upload the video file you want to project. The audio will be shared with your audience.
+            Upload a video file or paste a video URL to project.
           </p>
 
-          <label className={`flex flex-col items-center justify-center h-64 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
-            {isUploading ? (
-              <>
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
-                <span className="text-muted-foreground">Processing video...</span>
-              </>
-            ) : (
-              <>
-                <Upload className="w-12 h-12 text-muted-foreground mb-4" />
-                <span className="text-foreground font-medium">Click to upload video</span>
-                <span className="text-muted-foreground text-sm mt-1">MP4, WebM, MOV</span>
-                <span className="text-muted-foreground text-xs mt-4">
-                  The video will play on this screen while audio streams to phones
-                </span>
-              </>
-            )}
-            <input
-              type="file"
-              accept="video/*"
-              className="hidden"
-              onChange={handleFileChange}
-              disabled={isUploading}
-            />
-          </label>
+          {/* Toggle between upload and URL */}
+          <div className="flex gap-2 justify-center mb-6">
+            <Button
+              variant={!showUrlInput ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowUrlInput(false)}
+            >
+              <Upload className="w-4 h-4 mr-2" />
+              Upload File
+            </Button>
+            <Button
+              variant={showUrlInput ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowUrlInput(true)}
+            >
+              <Link className="w-4 h-4 mr-2" />
+              Paste URL
+            </Button>
+          </div>
+
+          {showUrlInput ? (
+            /* URL Input */
+            <div className="space-y-4">
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://example.com/video.mp4"
+                className="w-full h-14 px-6 rounded-xl bg-secondary border border-border text-center text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+              />
+              <Button
+                variant="hero"
+                size="xl"
+                className="w-full"
+                onClick={handleUrlSubmit}
+                disabled={!urlInput.trim() || isUploading}
+              >
+                {isUploading ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-foreground"></div>
+                ) : (
+                  'Load Video'
+                )}
+              </Button>
+              <p className="text-muted-foreground text-xs">
+                Paste a direct link to an MP4, WebM, or other video file
+              </p>
+            </div>
+          ) : (
+            /* File Upload */
+            <label className={`flex flex-col items-center justify-center h-64 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
+              {isUploading ? (
+                <>
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
+                  <span className="text-muted-foreground">Processing video...</span>
+                </>
+              ) : (
+                <>
+                  <Upload className="w-12 h-12 text-muted-foreground mb-4" />
+                  <span className="text-foreground font-medium">Click to upload video</span>
+                  <span className="text-muted-foreground text-sm mt-1">MP4, WebM, MOV</span>
+                  <span className="text-muted-foreground text-xs mt-4">
+                    The video will play on this screen while audio streams to phones
+                  </span>
+                </>
+              )}
+              <input
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={handleFileChange}
+                disabled={isUploading}
+              />
+            </label>
+          )}
 
           {/* Instructions */}
           <div className="mt-8 p-4 rounded-xl bg-muted/30 border border-border text-left">
             <h4 className="text-sm font-medium text-foreground mb-2">How it works</h4>
             <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-              <li>Upload your movie file</li>
+              <li>Upload your movie file or paste a video URL</li>
               <li>The video displays on this screen for projection</li>
               <li>Audience scans the QR code with their phones</li>
               <li>They hear synced audio through their headphones</li>

@@ -2,16 +2,33 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
+export interface AudioTrack {
+  index: number;
+  label: string;
+  language: string;
+}
+
+export interface SubtitleTrack {
+  index: number;
+  label: string;
+  language: string;
+}
+
 export interface Session {
   id: string;
   code: string;
   title: string;
   audio_url: string | null;
   audio_filename: string | null;
+  video_url: string | null;
   is_playing: boolean;
   current_time_ms: number;
   last_sync_at: string;
   created_at: string;
+  audio_tracks: AudioTrack[];
+  subtitle_tracks: SubtitleTrack[];
+  selected_audio_track: number;
+  selected_subtitle_track: number;
 }
 
 export interface SessionListener {
@@ -35,6 +52,26 @@ const generateCode = (): string => {
 // Generate a unique listener token
 const generateListenerToken = (): string => {
   return crypto.randomUUID();
+};
+
+// Helper to parse session data from DB
+const parseSessionData = (data: Record<string, unknown>): Session => {
+  return {
+    id: data.id as string,
+    code: data.code as string,
+    title: data.title as string,
+    audio_url: data.audio_url as string | null,
+    audio_filename: data.audio_filename as string | null,
+    video_url: data.video_url as string | null,
+    is_playing: data.is_playing as boolean,
+    current_time_ms: data.current_time_ms as number,
+    last_sync_at: data.last_sync_at as string,
+    created_at: data.created_at as string,
+    audio_tracks: (data.audio_tracks as AudioTrack[]) || [],
+    subtitle_tracks: (data.subtitle_tracks as SubtitleTrack[]) || [],
+    selected_audio_track: (data.selected_audio_track as number) ?? 0,
+    selected_subtitle_track: (data.selected_subtitle_track as number) ?? -1,
+  };
 };
 
 export function useHostSession() {
@@ -62,8 +99,9 @@ export function useHostSession() {
 
       if (insertError) throw insertError;
       
-      setSession(data as Session);
-      return data as Session;
+      const sessionObj = parseSessionData(data as Record<string, unknown>);
+      setSession(sessionObj);
+      return sessionObj;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
       setError(message);
@@ -113,6 +151,65 @@ export function useHostSession() {
       return null;
     } finally {
       setIsLoading(false);
+    }
+  }, [session]);
+
+  // Update session with video URL and tracks
+  const updateVideoInfo = useCallback(async (
+    videoUrl: string,
+    audioTracks: AudioTrack[],
+    subtitleTracks: SubtitleTrack[]
+  ) => {
+    if (!session) return;
+    
+    try {
+      const { error: updateError } = await supabase
+        .from('sessions')
+        .update({
+          video_url: videoUrl,
+          audio_tracks: JSON.parse(JSON.stringify(audioTracks)),
+          subtitle_tracks: JSON.parse(JSON.stringify(subtitleTracks)),
+        })
+        .eq('id', session.id);
+
+      if (updateError) throw updateError;
+      
+      setSession(prev => prev ? { 
+        ...prev, 
+        video_url: videoUrl,
+        audio_tracks: audioTracks,
+        subtitle_tracks: subtitleTracks,
+      } : null);
+    } catch (err) {
+      console.error('Failed to update video info:', err);
+    }
+  }, [session]);
+
+  // Update selected tracks (for listener preference sync)
+  const updateSelectedTracks = useCallback(async (
+    audioTrack: number,
+    subtitleTrack: number
+  ) => {
+    if (!session) return;
+    
+    try {
+      const { error: updateError } = await supabase
+        .from('sessions')
+        .update({
+          selected_audio_track: audioTrack,
+          selected_subtitle_track: subtitleTrack,
+        })
+        .eq('id', session.id);
+
+      if (updateError) throw updateError;
+      
+      setSession(prev => prev ? { 
+        ...prev, 
+        selected_audio_track: audioTrack,
+        selected_subtitle_track: subtitleTrack,
+      } : null);
+    } catch (err) {
+      console.error('Failed to update selected tracks:', err);
     }
   }, [session]);
 
@@ -191,6 +288,8 @@ export function useHostSession() {
     createSession,
     uploadAudio,
     updatePlaybackState,
+    updateVideoInfo,
+    updateSelectedTracks,
   };
 }
 
@@ -236,7 +335,7 @@ export function useListenerSession(sessionCode: string) {
 
       if (insertError) throw insertError;
 
-      setSession(sessionData as Session);
+      setSession(parseSessionData(sessionData as Record<string, unknown>));
       setIsConnected(true);
       toast.success('Connected to session!');
       return true;
@@ -283,7 +382,7 @@ export function useListenerSession(sessionCode: string) {
           filter: `id=eq.${session.id}`,
         },
         (payload) => {
-          setSession(payload.new as Session);
+          setSession(parseSessionData(payload.new as Record<string, unknown>));
         }
       )
       .subscribe();

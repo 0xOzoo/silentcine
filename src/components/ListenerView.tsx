@@ -3,7 +3,9 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { useListenerSession } from "@/hooks/useSession";
+import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
+import SyncCalibration from "./SyncCalibration";
+import TrackSelector from "./TrackSelector";
 
 interface ListenerViewProps {
   onBack: () => void;
@@ -15,6 +17,10 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [volume, setVolume] = useState(80);
   const [isMuted, setIsMuted] = useState(false);
   const [localIsPlaying, setLocalIsPlaying] = useState(false);
+  const [syncOffset, setSyncOffset] = useState(0);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
+  const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(-1);
+  const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastSyncRef = useRef<string | null>(null);
 
@@ -40,7 +46,23 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     }
   }, [volume, isMuted]);
 
-  // Sync playback with host
+  // Handle audio track change
+  const handleAudioTrackChange = (index: number) => {
+    setSelectedAudioTrack(index);
+    // In a real implementation, this would switch the audio track
+    // For now, we just store the preference
+  };
+
+  // Handle subtitle track change
+  const handleSubtitleTrackChange = (index: number) => {
+    setSelectedSubtitleTrack(index);
+    if (index === -1) {
+      setCurrentSubtitle(null);
+    }
+    // In a real implementation, this would enable/disable subtitle tracks
+  };
+
+  // Sync playback with host (with calibration offset)
   useEffect(() => {
     if (!session || !audioRef.current || !session.audio_url) return;
     
@@ -51,16 +73,17 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     const audio = audioRef.current;
     const targetTimeSeconds = session.current_time_ms / 1000;
     
-    // Calculate time drift compensation
+    // Calculate time drift compensation with sync offset
     const timeSinceSync = (Date.now() - new Date(session.last_sync_at).getTime()) / 1000;
+    const offsetSeconds = syncOffset / 1000;
     const compensatedTime = session.is_playing 
-      ? targetTimeSeconds + timeSinceSync 
-      : targetTimeSeconds;
+      ? targetTimeSeconds + timeSinceSync + offsetSeconds
+      : targetTimeSeconds + offsetSeconds;
 
     // Only seek if we're more than 0.5 seconds off
     const currentDiff = Math.abs(audio.currentTime - compensatedTime);
     if (currentDiff > 0.5) {
-      audio.currentTime = compensatedTime;
+      audio.currentTime = Math.max(0, compensatedTime);
     }
 
     // Handle play/pause
@@ -71,7 +94,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
       audio.pause();
       setLocalIsPlaying(false);
     }
-  }, [session]);
+  }, [session, syncOffset]);
 
   // Handle manual play/pause toggle
   const togglePlay = () => {
@@ -85,6 +108,10 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
       setLocalIsPlaying(true);
     }
   };
+
+  // Get available tracks from session
+  const audioTracks: AudioTrack[] = session?.audio_tracks || [];
+  const subtitleTracks: SubtitleTrack[] = session?.subtitle_tracks || [];
 
   return (
     <motion.div
@@ -176,7 +203,15 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 ref={audioRef}
                 src={session.audio_url}
                 preload="auto"
+                crossOrigin="anonymous"
               />
+            )}
+
+            {/* Current Subtitle Display */}
+            {currentSubtitle && (
+              <div className="mb-4 p-3 rounded-lg bg-black/80 text-white text-center text-sm">
+                {currentSubtitle}
+              </div>
             )}
 
             {/* Now Playing */}
@@ -241,7 +276,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             </div>
 
             {/* Volume Control */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 mb-6">
               <button
                 onClick={toggleMute}
                 className="p-2 rounded-lg hover:bg-secondary transition-colors"
@@ -267,8 +302,24 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               </span>
             </div>
 
+            {/* Track Selection & Sync Controls */}
+            <div className="flex gap-2 justify-center mb-6">
+              <TrackSelector
+                audioTracks={audioTracks}
+                subtitleTracks={subtitleTracks}
+                selectedAudioTrack={selectedAudioTrack}
+                selectedSubtitleTrack={selectedSubtitleTrack}
+                onAudioTrackChange={handleAudioTrackChange}
+                onSubtitleTrackChange={handleSubtitleTrackChange}
+              />
+              <SyncCalibration
+                offsetMs={syncOffset}
+                onOffsetChange={setSyncOffset}
+              />
+            </div>
+
             {/* Tips */}
-            <div className="mt-8 p-4 rounded-xl bg-muted/30 border border-border">
+            <div className="mt-4 p-4 rounded-xl bg-muted/30 border border-border">
               <p className="text-xs text-muted-foreground text-center">
                 💡 For the best experience, use headphones and keep this screen open
               </p>
