@@ -217,6 +217,7 @@ export type Database = {
     }
     Functions: {
       generate_session_code: { Args: never; Returns: string }
+      get_listener_token: { Args: never; Returns: string }
     }
     Enums: {
       [_ in never]: never
