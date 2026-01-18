@@ -1,1 +1,7 @@
 project_id = "qodszidvcmbemjssgzwl"
+
+[functions.storage-upload]
+verify_jwt = false
+
+[functions.session-manager]
+verify_jwt = false
