@@ -112,39 +112,45 @@ export function useHostSession() {
     }
   }, []);
 
-  // Upload audio file
+  // Upload audio file via edge function (secure)
   const uploadAudio = useCallback(async (file: File) => {
     if (!session) return null;
     
     setIsLoading(true);
     try {
-      const fileExt = file.name.split('.').pop();
-      const filePath = `${session.id}/${Date.now()}.${fileExt}`;
-      
-      const { error: uploadError } = await supabase.storage
-        .from('audio-files')
-        .upload(filePath, file);
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('sessionId', session.id);
 
-      if (uploadError) throw uploadError;
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('audio-files')
-        .getPublicUrl(filePath);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Upload failed');
+      }
+
+      const { url, fileName } = await response.json();
 
       // Update session with audio URL
       const { error: updateError } = await supabase
         .from('sessions')
         .update({
-          audio_url: publicUrl,
-          audio_filename: file.name,
+          audio_url: url,
+          audio_filename: fileName,
         })
         .eq('id', session.id);
 
       if (updateError) throw updateError;
 
-      setSession(prev => prev ? { ...prev, audio_url: publicUrl, audio_filename: file.name } : null);
+      setSession(prev => prev ? { ...prev, audio_url: url, audio_filename: fileName } : null);
       toast.success('Audio uploaded successfully!');
-      return publicUrl;
+      return url;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to upload audio';
       toast.error(message);
