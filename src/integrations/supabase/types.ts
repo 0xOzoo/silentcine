@@ -44,6 +44,13 @@ export type Database = {
             referencedRelation: "sessions"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "session_listeners_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions_public"
+            referencedColumns: ["id"]
+          },
         ]
       }
       sessions: {
@@ -56,6 +63,7 @@ export type Database = {
           current_time_ms: number
           expires_at: string
           host_id: string | null
+          host_token: string | null
           id: string
           is_playing: boolean
           last_sync_at: string
@@ -75,6 +83,7 @@ export type Database = {
           current_time_ms?: number
           expires_at?: string
           host_id?: string | null
+          host_token?: string | null
           id?: string
           is_playing?: boolean
           last_sync_at?: string
@@ -94,6 +103,7 @@ export type Database = {
           current_time_ms?: number
           expires_at?: string
           host_id?: string | null
+          host_token?: string | null
           id?: string
           is_playing?: boolean
           last_sync_at?: string
@@ -135,7 +145,74 @@ export type Database = {
             referencedRelation: "sessions"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "session_listeners_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions_public"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      sessions_public: {
+        Row: {
+          audio_filename: string | null
+          audio_tracks: Json | null
+          audio_url: string | null
+          code: string | null
+          created_at: string | null
+          current_time_ms: number | null
+          expires_at: string | null
+          host_id: string | null
+          id: string | null
+          is_playing: boolean | null
+          last_sync_at: string | null
+          selected_audio_track: number | null
+          selected_subtitle_track: number | null
+          subtitle_tracks: Json | null
+          title: string | null
+          updated_at: string | null
+          video_url: string | null
+        }
+        Insert: {
+          audio_filename?: string | null
+          audio_tracks?: Json | null
+          audio_url?: string | null
+          code?: string | null
+          created_at?: string | null
+          current_time_ms?: number | null
+          expires_at?: string | null
+          host_id?: string | null
+          id?: string | null
+          is_playing?: boolean | null
+          last_sync_at?: string | null
+          selected_audio_track?: number | null
+          selected_subtitle_track?: number | null
+          subtitle_tracks?: Json | null
+          title?: string | null
+          updated_at?: string | null
+          video_url?: string | null
+        }
+        Update: {
+          audio_filename?: string | null
+          audio_tracks?: Json | null
+          audio_url?: string | null
+          code?: string | null
+          created_at?: string | null
+          current_time_ms?: number | null
+          expires_at?: string | null
+          host_id?: string | null
+          id?: string | null
+          is_playing?: boolean | null
+          last_sync_at?: string | null
+          selected_audio_track?: number | null
+          selected_subtitle_track?: number | null
+          subtitle_tracks?: Json | null
+          title?: string | null
+          updated_at?: string | null
+          video_url?: string | null
+        }
+        Relationships: []
       }
     }
     Functions: {
