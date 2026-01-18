@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.session-manager]
 verify_jwt = false
+
+[functions.listener-manager]
+verify_jwt = false

@@ -278,6 +278,29 @@ export function useListenerSession(sessionCode: string) {
   const [error, setError] = useState<string | null>(null);
   const [listenerToken] = useState(() => generateListenerToken());
 
+  // Helper to call listener manager edge function
+  const callListenerManager = useCallback(async (
+    action: string,
+    method: string,
+    body?: Record<string, unknown>
+  ): Promise<Response> => {
+    const url = new URL(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager`);
+    url.searchParams.set("action", action);
+    
+    if (method === "DELETE" && body?.sessionId) {
+      url.searchParams.set("sessionId", body.sessionId as string);
+    }
+
+    return fetch(url.toString(), {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "x-listener-token": listenerToken,
+      },
+      body: method !== "DELETE" && body ? JSON.stringify(body) : undefined,
+    });
+  }, [listenerToken]);
+
   // Connect to a session via edge function
   const connect = useCallback(async () => {
     if (!sessionCode) return false;
@@ -287,14 +310,6 @@ export function useListenerSession(sessionCode: string) {
     
     try {
       // Fetch session via secure edge function
-      const response = await callSessionManager(
-        "join",
-        "GET",
-        undefined,
-        undefined
-      );
-
-      // Build URL with code parameter
       const joinResponse = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${sessionCode.toUpperCase()}`,
         { method: "GET" }
@@ -307,18 +322,15 @@ export function useListenerSession(sessionCode: string) {
 
       const { session: sessionData } = await joinResponse.json();
 
-      // Register as a listener
-      const { error: insertError } = await supabase
-        .from("session_listeners")
-        .upsert({
-          session_id: sessionData.id,
-          listener_token: listenerToken,
-          last_ping_at: new Date().toISOString(),
-        }, {
-          onConflict: "session_id,listener_token",
-        });
+      // Register as a listener via edge function
+      const listenerResponse = await callListenerManager("join", "POST", {
+        sessionId: sessionData.id,
+      });
 
-      if (insertError) throw insertError;
+      if (!listenerResponse.ok) {
+        const errorData = await listenerResponse.json();
+        throw new Error(errorData.error || "Failed to join session");
+      }
 
       setSession(sessionData);
       setIsConnected(true);
@@ -332,25 +344,21 @@ export function useListenerSession(sessionCode: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [sessionCode, listenerToken]);
+  }, [sessionCode, listenerToken, callListenerManager]);
 
-  // Disconnect from session
+  // Disconnect from session via edge function
   const disconnect = useCallback(async () => {
     if (!session) return;
     
     try {
-      await supabase
-        .from("session_listeners")
-        .delete()
-        .eq("session_id", session.id)
-        .eq("listener_token", listenerToken);
+      await callListenerManager("leave", "DELETE", { sessionId: session.id });
     } catch (err) {
       console.error("Failed to disconnect:", err);
     }
     
     setIsConnected(false);
     setSession(null);
-  }, [session, listenerToken]);
+  }, [session, callListenerManager]);
 
   // Subscribe to session updates (realtime sync)
   useEffect(() => {
@@ -388,13 +396,23 @@ export function useListenerSession(sessionCode: string) {
       )
       .subscribe();
 
-    // Ping every 30 seconds to stay connected
+    // Ping every 30 seconds to stay connected via edge function
     const pingInterval = setInterval(async () => {
-      await supabase
-        .from("session_listeners")
-        .update({ last_ping_at: new Date().toISOString() })
-        .eq("session_id", session.id)
-        .eq("listener_token", listenerToken);
+      try {
+        await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager?action=ping`,
+          {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "x-listener-token": listenerToken,
+            },
+            body: JSON.stringify({ sessionId: session.id }),
+          }
+        );
+      } catch (err) {
+        console.error("Failed to ping:", err);
+      }
     }, 30000);
 
     return () => {
