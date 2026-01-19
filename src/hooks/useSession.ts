@@ -141,9 +141,12 @@ export function useHostSession() {
     }
   }, [session, hostToken]);
 
-  // Upload audio file via edge function (secure)
+  // Upload audio file via edge function (secure with host token)
   const uploadAudio = useCallback(async (file: File) => {
-    if (!session) return null;
+    if (!session || !hostToken) {
+      toast.error("Session or host token not available");
+      return null;
+    }
     
     setIsLoading(true);
     try {
@@ -155,6 +158,9 @@ export function useHostSession() {
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`,
         {
           method: "POST",
+          headers: {
+            "x-host-token": hostToken, // Pass host token for authorization
+          },
           body: formData,
         }
       );
@@ -183,7 +189,7 @@ export function useHostSession() {
     } finally {
       setIsLoading(false);
     }
-  }, [session, updateSession]);
+  }, [session, hostToken, updateSession]);
 
   // Update session with video URL and tracks
   const updateVideoInfo = useCallback(async (
