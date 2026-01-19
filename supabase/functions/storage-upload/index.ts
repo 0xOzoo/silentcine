@@ -38,11 +38,22 @@ Deno.serve(async (req) => {
       const formData = await req.formData();
       const file = formData.get("file") as File;
       const sessionId = formData.get("sessionId") as string;
+      
+      // Get host token from header for authorization
+      const hostToken = req.headers.get("x-host-token");
 
       if (!file || !sessionId) {
         return new Response(
           JSON.stringify({ error: "File and sessionId are required" }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Require host token for uploads
+      if (!hostToken) {
+        return new Response(
+          JSON.stringify({ error: "Host token required for uploads" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
@@ -74,16 +85,24 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Verify session exists
+      // Verify session exists AND host token matches
       const { data: sessionData, error: sessionError } = await supabaseAdmin
         .from("sessions")
-        .select("id")
+        .select("id, host_token")
         .eq("id", sessionId)
         .maybeSingle();
 
       if (sessionError || !sessionData) {
         return new Response(
           JSON.stringify({ error: "Invalid session" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Verify host token matches the session
+      if (sessionData.host_token !== hostToken) {
+        return new Response(
+          JSON.stringify({ error: "Unauthorized - invalid host token" }),
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
