@@ -307,6 +307,138 @@ Deno.serve(async (req) => {
       );
     }
 
+    // TERMINATE SESSION - host explicitly ends session (on tab close)
+    if (req.method === "DELETE" && action === "terminate") {
+      const hostToken = req.headers.get("x-host-token");
+      const sessionId = url.searchParams.get("sessionId");
+      
+      if (!hostToken || !sessionId) {
+        return new Response(
+          JSON.stringify({ error: "Host token and sessionId required" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Verify host token matches the session
+      const { data: sessionData, error: fetchError } = await supabaseAdmin
+        .from("sessions")
+        .select("id, host_token")
+        .eq("id", sessionId)
+        .single();
+
+      if (fetchError || !sessionData) {
+        return new Response(
+          JSON.stringify({ error: "Session not found" }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (sessionData.host_token !== hostToken) {
+        console.warn(`Invalid host token attempt to terminate session ${sessionId}`);
+        return new Response(
+          JSON.stringify({ error: "Invalid host token" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Delete all listeners for this session
+      await supabaseAdmin
+        .from("session_listeners")
+        .delete()
+        .eq("session_id", sessionId);
+
+      // Delete the session
+      const { error: deleteError } = await supabaseAdmin
+        .from("sessions")
+        .delete()
+        .eq("id", sessionId);
+
+      if (deleteError) {
+        console.error("Delete session error:", deleteError);
+        return new Response(
+          JSON.stringify({ error: "Failed to terminate session" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log(`Session terminated by host: ${sessionId}`);
+
+      return new Response(
+        JSON.stringify({ success: true }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // CLEANUP IDLE SESSIONS - called periodically to remove sessions with no listeners for 10+ minutes
+    if (req.method === "POST" && action === "cleanup") {
+      // Rate limit cleanup calls: 1 per minute
+      if (!await checkRateLimit(supabaseAdmin, `cleanup:global`, 1, 60)) {
+        return new Response(
+          JSON.stringify({ error: "Cleanup already running" }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Find sessions that have been idle (no active listeners) for more than 10 minutes
+      // A session is idle if it has no listeners whose last_ping_at is within the last 60 seconds
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      
+      // Get all sessions
+      const { data: sessions, error: sessionsError } = await supabaseAdmin
+        .from("sessions")
+        .select("id, code, updated_at");
+
+      if (sessionsError) {
+        console.error("Failed to fetch sessions for cleanup:", sessionsError);
+        return new Response(
+          JSON.stringify({ error: "Failed to fetch sessions" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      let deletedCount = 0;
+      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
+
+      for (const session of sessions || []) {
+        // Check if session has any active listeners (pinged within last 60 seconds)
+        const { data: activeListeners, error: listenersError } = await supabaseAdmin
+          .from("session_listeners")
+          .select("id")
+          .eq("session_id", session.id)
+          .gte("last_ping_at", oneMinuteAgo);
+
+        if (listenersError) {
+          console.error(`Failed to check listeners for session ${session.id}:`, listenersError);
+          continue;
+        }
+
+        // If no active listeners and session hasn't been updated in 10 minutes
+        if ((!activeListeners || activeListeners.length === 0) && session.updated_at < tenMinutesAgo) {
+          // Delete listeners first
+          await supabaseAdmin
+            .from("session_listeners")
+            .delete()
+            .eq("session_id", session.id);
+
+          // Delete the session
+          const { error: deleteError } = await supabaseAdmin
+            .from("sessions")
+            .delete()
+            .eq("id", session.id);
+
+          if (!deleteError) {
+            console.log(`Cleaned up idle session: ${session.code}`);
+            deletedCount++;
+          }
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, deletedCount }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     return new Response(
       JSON.stringify({ error: "Invalid action" }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }

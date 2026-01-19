@@ -83,6 +83,26 @@ export function useHostSession() {
   const [listeners, setListeners] = useState<SessionListener[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastListenerTime, setLastListenerTime] = useState<number>(Date.now());
+
+  // Terminate session via edge function
+  const terminateSession = useCallback(async (sessionId: string, token: string) => {
+    try {
+      await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=terminate&sessionId=${sessionId}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            "x-host-token": token,
+          },
+        }
+      );
+      console.log("Session terminated");
+    } catch (err) {
+      console.error("Failed to terminate session:", err);
+    }
+  }, []);
 
   // Create a new session via edge function
   const createSession = useCallback(async () => {
@@ -234,7 +254,13 @@ export function useHostSession() {
         .select("id, session_id, connected_at, last_ping_at")
         .eq("session_id", session.id);
       
-      setListeners((data as unknown as SessionListener[]) || []);
+      const listenerData = (data as unknown as SessionListener[]) || [];
+      setListeners(listenerData);
+
+      // Track when we last had listeners
+      if (listenerData.length > 0) {
+        setLastListenerTime(Date.now());
+      }
     };
 
     // Initial fetch
@@ -248,6 +274,54 @@ export function useHostSession() {
     };
   }, [session?.id]);
 
+  // Auto-terminate session if no listeners for 10 minutes
+  useEffect(() => {
+    if (!session || !hostToken) return;
+
+    const checkIdleTimeout = setInterval(() => {
+      const idleTime = Date.now() - lastListenerTime;
+      const tenMinutes = 10 * 60 * 1000;
+
+      if (listeners.length === 0 && idleTime >= tenMinutes) {
+        console.log("Session idle for 10 minutes with no listeners, terminating...");
+        terminateSession(session.id, hostToken);
+      }
+    }, 60000); // Check every minute
+
+    return () => clearInterval(checkIdleTimeout);
+  }, [session?.id, hostToken, listeners.length, lastListenerTime, terminateSession]);
+
+  // Terminate session on tab close/beforeunload
+  useEffect(() => {
+    if (!session || !hostToken) return;
+
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable delivery during page unload
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=terminate&sessionId=${session.id}`;
+      
+      // sendBeacon doesn't support custom headers, so we use fetch with keepalive
+      navigator.sendBeacon(url); // Fallback attempt
+      
+      // Primary method: fetch with keepalive (allows headers)
+      fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "x-host-token": hostToken,
+        },
+        keepalive: true, // Critical for page unload
+      }).catch(() => {
+        // Silently fail - page is unloading
+      });
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [session?.id, hostToken]);
+
   return {
     session,
     listeners,
@@ -258,6 +332,7 @@ export function useHostSession() {
     updatePlaybackState,
     updateVideoInfo,
     updateSelectedTracks,
+    terminateSession: session && hostToken ? () => terminateSession(session.id, hostToken) : undefined,
   };
 }
 
