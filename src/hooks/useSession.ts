@@ -224,43 +224,27 @@ export function useHostSession() {
     });
   }, [updateSession]);
 
-  // Subscribe to listener changes
+  // Poll for listener count (since realtime requires direct table access with RLS)
   useEffect(() => {
     if (!session) return;
 
-    const channel = supabase
-      .channel(`listeners:${session.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "session_listeners",
-          filter: `session_id=eq.${session.id}`,
-        },
-        async () => {
-          // Refetch listeners from public view (excludes tokens)
-          const { data } = await supabase
-            .from("session_listeners_public" as any)
-            .select("id, session_id, connected_at, last_ping_at")
-            .eq("session_id", session.id);
-          
-          setListeners((data as unknown as SessionListener[]) || []);
-        }
-      )
-      .subscribe();
+    const fetchListeners = async () => {
+      const { data } = await supabase
+        .from("session_listeners_public" as any)
+        .select("id, session_id, connected_at, last_ping_at")
+        .eq("session_id", session.id);
+      
+      setListeners((data as unknown as SessionListener[]) || []);
+    };
 
-    // Initial fetch from public view (excludes tokens)
-    supabase
-      .from("session_listeners_public" as any)
-      .select("id, session_id, connected_at, last_ping_at")
-      .eq("session_id", session.id)
-      .then(({ data }) => {
-        setListeners((data as unknown as SessionListener[]) || []);
-      });
+    // Initial fetch
+    fetchListeners();
+
+    // Poll every 5 seconds
+    const pollInterval = setInterval(fetchListeners, 5000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(pollInterval);
     };
   }, [session?.id]);
 
@@ -366,41 +350,32 @@ export function useListenerSession(sessionCode: string) {
     setSession(null);
   }, [session, callListenerManager]);
 
-  // Subscribe to session updates (realtime sync)
+  // Poll for session updates (since realtime requires direct table access with RLS)
   useEffect(() => {
     if (!session || !isConnected) return;
 
-    const channel = supabase
-      .channel(`session:${session.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "sessions",
-          filter: `id=eq.${session.id}`,
-        },
-        (payload) => {
-          const data = payload.new as Record<string, unknown>;
-          setSession({
-            id: data.id as string,
-            code: data.code as string,
-            title: data.title as string,
-            audio_url: data.audio_url as string | null,
-            audio_filename: data.audio_filename as string | null,
-            video_url: data.video_url as string | null,
-            is_playing: data.is_playing as boolean,
-            current_time_ms: data.current_time_ms as number,
-            last_sync_at: data.last_sync_at as string,
-            created_at: data.created_at as string,
-            audio_tracks: (data.audio_tracks as AudioTrack[]) || [],
-            subtitle_tracks: (data.subtitle_tracks as SubtitleTrack[]) || [],
-            selected_audio_track: (data.selected_audio_track as number) ?? 0,
-            selected_subtitle_track: (data.selected_subtitle_track as number) ?? -1,
-          });
+    // Poll for session updates every 2 seconds
+    const pollSession = async () => {
+      try {
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${session.code}`,
+          { method: "GET" }
+        );
+        
+        if (response.ok) {
+          const { session: updatedSession } = await response.json();
+          setSession(updatedSession);
         }
-      )
-      .subscribe();
+      } catch (err) {
+        console.error("Failed to poll session:", err);
+      }
+    };
+
+    // Initial poll
+    pollSession();
+
+    // Poll every 2 seconds for sync updates
+    const pollInterval = setInterval(pollSession, 2000);
 
     // Ping every 30 seconds to stay connected via edge function
     const pingInterval = setInterval(async () => {
@@ -422,11 +397,11 @@ export function useListenerSession(sessionCode: string) {
     }, 30000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(pollInterval);
       clearInterval(pingInterval);
       disconnect();
     };
-  }, [session?.id, isConnected, listenerToken, disconnect]);
+  }, [session?.id, session?.code, isConnected, listenerToken, disconnect]);
 
   return {
     session,
