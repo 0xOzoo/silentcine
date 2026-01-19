@@ -5,6 +5,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-listener-token",
 };
 
+// Simple in-memory rate limiting (resets on function cold start)
+const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+
+function checkRateLimit(ip: string, action: string, maxRequests: number): boolean {
+  const key = `${ip}:${action}`;
+  const now = Date.now();
+  const record = RATE_LIMITS[key];
+  
+  if (!record || now > record.resetAt) {
+    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    return true;
+  }
+  
+  if (record.count >= maxRequests) {
+    return false;
+  }
+  
+  record.count++;
+  return true;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -12,6 +34,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
@@ -24,6 +48,14 @@ Deno.serve(async (req) => {
 
     // JOIN: Register as a listener
     if (req.method === "POST" && action === "join") {
+      // Rate limit: 10 joins per minute per IP
+      if (!checkRateLimit(ip, "join", 10)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const { sessionId } = await req.json();
 
       if (!sessionId || !listenerToken) {
@@ -84,6 +116,14 @@ Deno.serve(async (req) => {
 
     // PING: Update last_ping_at
     if (req.method === "PUT" && action === "ping") {
+      // Rate limit: 5 pings per minute per listener token (should be ~2/minute normally)
+      if (!checkRateLimit(listenerToken || ip, "ping", 5)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const { sessionId } = await req.json();
 
       if (!sessionId || !listenerToken) {

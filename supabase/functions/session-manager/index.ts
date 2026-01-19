@@ -5,6 +5,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-host-token",
 };
 
+// Simple in-memory rate limiting (resets on function cold start)
+const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+
+function checkRateLimit(ip: string, action: string, maxRequests: number): boolean {
+  const key = `${ip}:${action}`;
+  const now = Date.now();
+  const record = RATE_LIMITS[key];
+  
+  if (!record || now > record.resetAt) {
+    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    return true;
+  }
+  
+  if (record.count >= maxRequests) {
+    return false;
+  }
+  
+  record.count++;
+  return true;
+}
+
 // Generate a secure session code
 function generateCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -25,6 +47,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
@@ -36,6 +60,14 @@ Deno.serve(async (req) => {
 
     // CREATE SESSION - generates a new session with host token
     if (req.method === "POST" && action === "create") {
+      // Rate limit: 5 session creations per minute per IP
+      if (!checkRateLimit(ip, "create", 5)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const { title } = await req.json().catch(() => ({ title: "Untitled Session" }));
       
       const code = generateCode();
@@ -107,6 +139,14 @@ Deno.serve(async (req) => {
         );
       }
 
+      // Rate limit: 60 updates per minute per session (to allow playback sync)
+      if (!checkRateLimit(sessionId, "update", 60)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       // Validate allowed fields only
       const allowedFields = [
         "title", "audio_url", "audio_filename", "video_url",
@@ -167,8 +207,6 @@ Deno.serve(async (req) => {
         );
       }
 
-      console.log(`Session ${sessionId} updated successfully`);
-
       return new Response(
         JSON.stringify({
           session: {
@@ -194,6 +232,14 @@ Deno.serve(async (req) => {
 
     // GET SESSION (for listeners) - public access via session code
     if (req.method === "GET" && action === "join") {
+      // Rate limit: 30 joins per minute per IP
+      if (!checkRateLimit(ip, "join", 30)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const sessionCode = url.searchParams.get("code");
       
       if (!sessionCode) {

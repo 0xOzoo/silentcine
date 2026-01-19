@@ -43,13 +43,13 @@ const generateListenerToken = (): string => {
   return crypto.randomUUID();
 };
 
-// Helper to get/set host token from localStorage
+// Helper to get/set host token from sessionStorage (auto-cleanup on tab close)
 const getHostToken = (sessionCode: string): string | null => {
-  return localStorage.getItem(`host_token_${sessionCode}`);
+  return sessionStorage.getItem(`host_token_${sessionCode}`);
 };
 
 const setHostToken = (sessionCode: string, token: string): void => {
-  localStorage.setItem(`host_token_${sessionCode}`, token);
+  sessionStorage.setItem(`host_token_${sessionCode}`, token);
 };
 
 // Helper to call session manager edge function
