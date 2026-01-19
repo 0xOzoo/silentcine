@@ -20,26 +20,32 @@ const ALLOWED_TYPES = [
   "application/octet-stream", // For unknown file types
 ];
 
-// Simple in-memory rate limiting (resets on function cold start)
-const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
-const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+// Database-based rate limiting (persistent across cold starts)
+// deno-lint-ignore no-explicit-any
+async function checkRateLimit(
+  supabase: any,
+  key: string,
+  maxRequests: number,
+  windowSeconds: number = 60
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("check_rate_limit", {
+      p_key: key,
+      p_max_requests: maxRequests,
+      p_window_seconds: windowSeconds,
+    });
 
-function checkRateLimit(ip: string, maxRequests: number): boolean {
-  const key = `upload:${ip}`;
-  const now = Date.now();
-  const record = RATE_LIMITS[key];
-  
-  if (!record || now > record.resetAt) {
-    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    return true;
+    if (error) {
+      console.error("Rate limit check error:", error);
+      // Fail open to avoid blocking legitimate requests on DB errors
+      return true;
+    }
+
+    return data === true;
+  } catch (err) {
+    console.error("Rate limit exception:", err);
+    return true; // Fail open
   }
-  
-  if (record.count >= maxRequests) {
-    return false;
-  }
-  
-  record.count++;
-  return true;
 }
 
 Deno.serve(async (req) => {
@@ -58,8 +64,8 @@ Deno.serve(async (req) => {
     );
 
     if (req.method === "POST") {
-      // Rate limit: 3 uploads per minute per IP
-      if (!checkRateLimit(ip, 3)) {
+      // Rate limit: 3 uploads per minute per IP (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `upload:${ip}`, 3, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
