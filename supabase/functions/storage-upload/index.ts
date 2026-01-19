@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-host-token",
 };
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB max
@@ -20,6 +20,28 @@ const ALLOWED_TYPES = [
   "application/octet-stream", // For unknown file types
 ];
 
+// Simple in-memory rate limiting (resets on function cold start)
+const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+
+function checkRateLimit(ip: string, maxRequests: number): boolean {
+  const key = `upload:${ip}`;
+  const now = Date.now();
+  const record = RATE_LIMITS[key];
+  
+  if (!record || now > record.resetAt) {
+    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    return true;
+  }
+  
+  if (record.count >= maxRequests) {
+    return false;
+  }
+  
+  record.count++;
+  return true;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -27,6 +49,8 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
@@ -34,6 +58,14 @@ Deno.serve(async (req) => {
     );
 
     if (req.method === "POST") {
+      // Rate limit: 3 uploads per minute per IP
+      if (!checkRateLimit(ip, 3)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       // Handle file upload
       const formData = await req.formData();
       const file = formData.get("file") as File;
@@ -151,41 +183,12 @@ Deno.serve(async (req) => {
       );
     }
 
+    // GET endpoint removed - use signed URLs from session data instead
+    // This prevents unauthenticated file access
     if (req.method === "GET") {
-      // Generate signed URL for existing file
-      const url = new URL(req.url);
-      const filePath = url.searchParams.get("filePath");
-      const sessionId = url.searchParams.get("sessionId");
-
-      if (!filePath || !sessionId) {
-        return new Response(
-          JSON.stringify({ error: "filePath and sessionId are required" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      // Verify file belongs to session
-      if (!filePath.startsWith(sessionId + "/")) {
-        return new Response(
-          JSON.stringify({ error: "Unauthorized access" }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const { data: signedData, error: signedError } = await supabaseAdmin.storage
-        .from("audio-files")
-        .createSignedUrl(filePath, 86400);
-
-      if (signedError) {
-        return new Response(
-          JSON.stringify({ error: "Failed to generate access URL" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
       return new Response(
-        JSON.stringify({ url: signedData.signedUrl }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Use signed URLs from session data to access files" }),
+        { status: 410, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
