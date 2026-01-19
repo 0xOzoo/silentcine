@@ -5,26 +5,32 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-listener-token",
 };
 
-// Simple in-memory rate limiting (resets on function cold start)
-const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
-const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+// Database-based rate limiting (persistent across cold starts)
+// deno-lint-ignore no-explicit-any
+async function checkRateLimit(
+  supabase: any,
+  key: string,
+  maxRequests: number,
+  windowSeconds: number = 60
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("check_rate_limit", {
+      p_key: key,
+      p_max_requests: maxRequests,
+      p_window_seconds: windowSeconds,
+    });
 
-function checkRateLimit(ip: string, action: string, maxRequests: number): boolean {
-  const key = `${ip}:${action}`;
-  const now = Date.now();
-  const record = RATE_LIMITS[key];
-  
-  if (!record || now > record.resetAt) {
-    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    return true;
+    if (error) {
+      console.error("Rate limit check error:", error);
+      // Fail open to avoid blocking legitimate requests on DB errors
+      return true;
+    }
+
+    return data === true;
+  } catch (err) {
+    console.error("Rate limit exception:", err);
+    return true; // Fail open
   }
-  
-  if (record.count >= maxRequests) {
-    return false;
-  }
-  
-  record.count++;
-  return true;
 }
 
 Deno.serve(async (req) => {
@@ -48,8 +54,8 @@ Deno.serve(async (req) => {
 
     // JOIN: Register as a listener
     if (req.method === "POST" && action === "join") {
-      // Rate limit: 10 joins per minute per IP
-      if (!checkRateLimit(ip, "join", 10)) {
+      // Rate limit: 10 joins per minute per IP (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `listener_join:${ip}`, 10, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -116,8 +122,8 @@ Deno.serve(async (req) => {
 
     // PING: Update last_ping_at
     if (req.method === "PUT" && action === "ping") {
-      // Rate limit: 5 pings per minute per listener token (should be ~2/minute normally)
-      if (!checkRateLimit(listenerToken || ip, "ping", 5)) {
+      // Rate limit: 5 pings per minute per listener token (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `ping:${listenerToken || ip}`, 5, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }

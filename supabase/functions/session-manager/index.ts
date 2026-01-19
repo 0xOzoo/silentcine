@@ -5,26 +5,32 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-host-token",
 };
 
-// Simple in-memory rate limiting (resets on function cold start)
-const RATE_LIMITS: Record<string, { count: number; resetAt: number }> = {};
-const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+// Database-based rate limiting (persistent across cold starts)
+// deno-lint-ignore no-explicit-any
+async function checkRateLimit(
+  supabase: any,
+  key: string,
+  maxRequests: number,
+  windowSeconds: number = 60
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("check_rate_limit", {
+      p_key: key,
+      p_max_requests: maxRequests,
+      p_window_seconds: windowSeconds,
+    });
 
-function checkRateLimit(ip: string, action: string, maxRequests: number): boolean {
-  const key = `${ip}:${action}`;
-  const now = Date.now();
-  const record = RATE_LIMITS[key];
-  
-  if (!record || now > record.resetAt) {
-    RATE_LIMITS[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    return true;
+    if (error) {
+      console.error("Rate limit check error:", error);
+      // Fail open to avoid blocking legitimate requests on DB errors
+      return true;
+    }
+
+    return data === true;
+  } catch (err) {
+    console.error("Rate limit exception:", err);
+    return true; // Fail open
   }
-  
-  if (record.count >= maxRequests) {
-    return false;
-  }
-  
-  record.count++;
-  return true;
 }
 
 // Generate a secure session code
@@ -60,8 +66,8 @@ Deno.serve(async (req) => {
 
     // CREATE SESSION - generates a new session with host token
     if (req.method === "POST" && action === "create") {
-      // Rate limit: 5 session creations per minute per IP
-      if (!checkRateLimit(ip, "create", 5)) {
+      // Rate limit: 5 session creations per minute per IP (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `create:${ip}`, 5, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -139,8 +145,8 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Rate limit: 60 updates per minute per session (to allow playback sync)
-      if (!checkRateLimit(sessionId, "update", 60)) {
+      // Rate limit: 60 updates per minute per session (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `update:${sessionId}`, 60, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -232,8 +238,8 @@ Deno.serve(async (req) => {
 
     // GET SESSION (for listeners) - public access via session code
     if (req.method === "GET" && action === "join") {
-      // Rate limit: 30 joins per minute per IP
-      if (!checkRateLimit(ip, "join", 30)) {
+      // Rate limit: 30 joins per minute per IP (persistent)
+      if (!await checkRateLimit(supabaseAdmin, `join:${ip}`, 30, 60)) {
         return new Response(
           JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
