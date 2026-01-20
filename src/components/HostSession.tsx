@@ -3,10 +3,10 @@ import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
 import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useHostSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 import PiPQRCode from "./PiPQRCode";
-
 interface HostSessionProps {
   onBack: () => void;
 }
@@ -20,6 +20,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [duration, setDuration] = useState(0);
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -85,6 +86,18 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     if (file && session) {
       setVideoFile(file);
       setIsUploading(true);
+      setUploadProgress(0);
+      
+      // Simulate progress for UX while processing
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev >= 90) {
+            clearInterval(progressInterval);
+            return 90;
+          }
+          return prev + Math.random() * 15;
+        });
+      }, 200);
       
       // Create local URL for video playback
       const localUrl = URL.createObjectURL(file);
@@ -93,11 +106,18 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       // Extract audio and upload it
       const audioUrl = await uploadAudio(file);
       
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+      
       if (!audioUrl) {
         toast.info("Video loaded locally. Listeners will sync with your playback.");
       }
       
-      setIsUploading(false);
+      // Small delay to show 100% before hiding
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }, 500);
     }
   };
 
@@ -457,12 +477,31 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </div>
           ) : (
             /* File Upload */
-            <label className={`flex flex-col items-center justify-center h-64 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'opacity-50 cursor-wait' : ''}`}>
+            <label className={`flex flex-col items-center justify-center h-64 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${isUploading ? 'pointer-events-none' : ''}`}>
               {isUploading ? (
-                <>
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mb-4"></div>
-                  <span className="text-muted-foreground">Processing video...</span>
-                </>
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex flex-col items-center w-full px-8"
+                >
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                    className="w-14 h-14 rounded-full border-3 border-primary/20 border-t-primary mb-4"
+                  />
+                  <span className="text-foreground font-medium mb-2">Processing video...</span>
+                  <div className="w-full max-w-xs">
+                    <Progress value={uploadProgress} className="h-2" />
+                  </div>
+                  <motion.span
+                    key={Math.round(uploadProgress)}
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-muted-foreground text-sm mt-2"
+                  >
+                    {Math.round(uploadProgress)}%
+                  </motion.span>
+                </motion.div>
               ) : (
                 <>
                   <Upload className="w-12 h-12 text-muted-foreground mb-4" />
