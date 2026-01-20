@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones } from "lucide-react";
+import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones, ScanLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 import SyncCalibration from "./SyncCalibration";
 import TrackSelector from "./TrackSelector";
+import QRScanner from "./QRScanner";
 
 interface ListenerViewProps {
   onBack: () => void;
@@ -21,6 +22,8 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(-1);
   const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [shouldAutoConnect, setShouldAutoConnect] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastSyncRef = useRef<string | null>(null);
 
@@ -30,6 +33,19 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     if (inputCode.length > 0) {
       await connect();
     }
+  };
+
+  // Auto-connect after QR scan sets the code
+  useEffect(() => {
+    if (shouldAutoConnect && inputCode.length > 0 && !isLoading && !isConnected) {
+      setShouldAutoConnect(false);
+      connect();
+    }
+  }, [shouldAutoConnect, inputCode, isLoading, isConnected, connect]);
+
+  const handleQRScan = (code: string) => {
+    setInputCode(code);
+    setShouldAutoConnect(true);
   };
 
   const toggleMute = () => {
@@ -155,24 +171,43 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 maxLength={8}
               />
 
-              <Button
-                variant="hero"
-                size="xl"
-                className="w-full"
-                onClick={handleConnect}
-                disabled={inputCode.length === 0 || isLoading}
-              >
-                {isLoading ? (
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-foreground"></div>
-                ) : (
-                  'Connect'
-                )}
-              </Button>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  size="xl"
+                  className="flex-1"
+                  onClick={() => setIsScannerOpen(true)}
+                >
+                  <ScanLine className="w-5 h-5 mr-2" />
+                  Scan QR
+                </Button>
+                
+                <Button
+                  variant="hero"
+                  size="xl"
+                  className="flex-1"
+                  onClick={handleConnect}
+                  disabled={inputCode.length === 0 || isLoading}
+                >
+                  {isLoading ? (
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-foreground"></div>
+                  ) : (
+                    'Connect'
+                  )}
+                </Button>
+              </div>
             </div>
 
             <p className="mt-6 text-xs text-muted-foreground">
               Make sure your volume is turned up and headphones are connected
             </p>
+
+            {/* QR Scanner Modal */}
+            <QRScanner
+              isOpen={isScannerOpen}
+              onClose={() => setIsScannerOpen(false)}
+              onScan={handleQRScan}
+            />
           </motion.div>
         ) : (
           /* Player View */
