@@ -171,31 +171,56 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 maxLength={8}
               />
 
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  size="xl"
-                  className="flex-1"
-                  onClick={() => setIsScannerOpen(true)}
+              {isLoading ? (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-4"
                 >
-                  <ScanLine className="w-5 h-5 mr-2" />
-                  Scan QR
-                </Button>
-                
-                <Button
-                  variant="hero"
-                  size="xl"
-                  className="flex-1"
-                  onClick={handleConnect}
-                  disabled={inputCode.length === 0 || isLoading}
-                >
-                  {isLoading ? (
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-foreground"></div>
-                  ) : (
-                    'Connect'
-                  )}
-                </Button>
-              </div>
+                  <div className="flex flex-col items-center gap-3">
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                      className="w-12 h-12 rounded-full border-3 border-primary/20 border-t-primary"
+                    />
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="text-sm text-muted-foreground"
+                    >
+                      Connecting to session...
+                    </motion.p>
+                  </div>
+                  <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+                    <motion.div
+                      className="h-full bg-gradient-to-r from-primary to-glow-secondary rounded-full"
+                      initial={{ x: "-100%" }}
+                      animate={{ x: "100%" }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "easeInOut" }}
+                    />
+                  </div>
+                </motion.div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    variant="outline"
+                    size="xl"
+                    onClick={() => setIsScannerOpen(true)}
+                  >
+                    <ScanLine className="w-5 h-5 mr-2" />
+                    Scan QR
+                  </Button>
+                  
+                  <Button
+                    variant="hero"
+                    size="xl"
+                    onClick={handleConnect}
+                    disabled={inputCode.length === 0}
+                  >
+                    Connect
+                  </Button>
+                </div>
+              )}
             </div>
 
             <p className="mt-6 text-xs text-muted-foreground">
