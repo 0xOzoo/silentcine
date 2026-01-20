@@ -452,7 +452,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 )}
               </Button>
               <p className="text-muted-foreground text-xs">
-                Paste a direct link to an MP4, WebM, or other video file
+                Paste a direct link to an MP4, WebM, MKV, or other video file
               </p>
             </div>
           ) : (
@@ -467,7 +467,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 <>
                   <Upload className="w-12 h-12 text-muted-foreground mb-4" />
                   <span className="text-foreground font-medium">Click to upload video</span>
-                  <span className="text-muted-foreground text-sm mt-1">MP4, WebM, MOV</span>
+                  <span className="text-muted-foreground text-sm mt-1">MP4, WebM, MOV, MKV</span>
                   <span className="text-muted-foreground text-xs mt-4">
                     The video will play on this screen while audio streams to phones
                   </span>
