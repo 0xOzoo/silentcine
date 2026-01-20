@@ -429,17 +429,26 @@ export function useListenerSession(sessionCode: string) {
   useEffect(() => {
     if (!session || !isConnected) return;
 
+    const sessionId = session.id;
+    const sessionCode = session.code;
+
     // Poll for session updates every 2 seconds
     const pollSession = async () => {
       try {
         const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${session.code}`,
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${sessionCode}`,
           { method: "GET" }
         );
         
         if (response.ok) {
           const { session: updatedSession } = await response.json();
           setSession(updatedSession);
+        } else if (response.status === 404) {
+          // Session was terminated by host
+          console.log("Session terminated by host");
+          setIsConnected(false);
+          setSession(null);
+          toast.error("Session ended by host");
         }
       } catch (err) {
         console.error("Failed to poll session:", err);
@@ -463,7 +472,7 @@ export function useListenerSession(sessionCode: string) {
               "Content-Type": "application/json",
               "x-listener-token": listenerToken,
             },
-            body: JSON.stringify({ sessionId: session.id }),
+            body: JSON.stringify({ sessionId }),
           }
         );
       } catch (err) {
@@ -474,9 +483,28 @@ export function useListenerSession(sessionCode: string) {
     return () => {
       clearInterval(pollInterval);
       clearInterval(pingInterval);
-      disconnect();
     };
-  }, [session?.id, session?.code, isConnected, listenerToken, disconnect]);
+  }, [isConnected, listenerToken]);
+
+  // Cleanup on unmount only
+  useEffect(() => {
+    return () => {
+      if (session) {
+        // Fire and forget cleanup on unmount
+        fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager?action=leave&sessionId=${session.id}`,
+          {
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json",
+              "x-listener-token": listenerToken,
+            },
+            keepalive: true,
+          }
+        ).catch(() => {});
+      }
+    };
+  }, []);
 
   return {
     session,
