@@ -24,7 +24,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [shouldAutoConnect, setShouldAutoConnect] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioRef = useRef<HTMLVideoElement>(null);
   const lastSyncRef = useRef<string | null>(null);
 
   const { session, isConnected, isLoading, connect } = useListenerSession(inputCode);
@@ -257,13 +257,15 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               )}
             </div>
 
-            {/* Hidden Audio Element */}
+            {/* Hidden Video Element for Audio Playback */}
             {session?.audio_url && (
-              <audio
+              <video
                 ref={audioRef}
                 src={session.audio_url}
                 preload="auto"
                 crossOrigin="anonymous"
+                playsInline
+                style={{ display: 'none' }}
               />
             )}
 
