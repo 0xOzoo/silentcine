@@ -339,10 +339,26 @@ const HostSession = ({ onBack }: HostSessionProps) => {
 
         {/* QR Code Sidebar */}
         <div className={`flex flex-col items-center justify-center bg-background/95 backdrop-blur ${isFullscreen ? 'w-64 p-4' : 'w-72 p-6 rounded-2xl ml-4'}`}>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
-            <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
-            Session Live
-          </div>
+          {/* Upload Progress or Live Status */}
+          {isUploading ? (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-500 text-sm font-medium mb-4"
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                className="w-3.5 h-3.5 rounded-full border-2 border-amber-500/30 border-t-amber-500"
+              />
+              Uploading Audio...
+            </motion.div>
+          ) : (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
+              <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
+              {session?.audio_url ? "Ready to Stream" : "Session Live"}
+            </div>
+          )}
 
           <h2 className="font-display text-lg font-bold text-foreground mb-1 text-center">
             Scan to Listen
@@ -350,6 +366,21 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           <p className="text-muted-foreground text-xs mb-4 text-center">
             Session: {session?.code}
           </p>
+
+          {/* Upload Progress Bar */}
+          {isUploading && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full mb-4"
+            >
+              <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                <span>Processing video...</span>
+                <span>{Math.round(uploadProgress)}%</span>
+              </div>
+              <Progress value={uploadProgress} className="h-2" />
+            </motion.div>
+          )}
 
           {/* QR Code */}
           <div className="bg-white p-4 rounded-xl mb-4">
@@ -370,6 +401,13 @@ const HostSession = ({ onBack }: HostSessionProps) => {
               {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
             </span>
           </div>
+
+          {/* Audio Status */}
+          {!isUploading && (
+            <div className={`text-xs mb-3 px-3 py-1.5 rounded-full ${session?.audio_url ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
+              {session?.audio_url ? '✓ Audio ready for listeners' : 'Preparing audio...'}
+            </div>
+          )}
 
           {/* Action buttons */}
           <div className="flex flex-col gap-2 w-full">
