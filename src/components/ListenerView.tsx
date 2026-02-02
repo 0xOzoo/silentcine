@@ -306,6 +306,12 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                       />
                     ))}
                   </div>
+                ) : !session?.audio_url ? (
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                    className="w-12 h-12 rounded-full border-2 border-primary/30 border-t-primary"
+                  />
                 ) : (
                   <Headphones className="w-12 h-12 text-primary/50" />
                 )}
@@ -313,13 +319,20 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
 
               <p className="text-muted-foreground text-sm">
                 {!session?.audio_url 
-                  ? "Waiting for host to upload audio..." 
+                  ? "Waiting for host to upload video..." 
                   : localIsPlaying 
                     ? "Audio streaming..." 
                     : session?.is_playing 
-                      ? "Tap play to sync with host" 
-                      : "Waiting for host to start..."}
+                      ? "Tap PLAY to start audio" 
+                      : "Waiting for host to start playback..."}
               </p>
+              
+              {/* Debug info for troubleshooting */}
+              {session?.audio_url && !localIsPlaying && (
+                <p className="text-xs text-muted-foreground/50 mt-2">
+                  Audio ready • Tap play button below
+                </p>
+              )}
             </div>
 
             {/* Play Button */}
