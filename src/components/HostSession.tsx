@@ -88,25 +88,16 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       setIsUploading(true);
       setUploadProgress(0);
       
-      // Simulate progress for UX while processing
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(progressInterval);
-            return 90;
-          }
-          return prev + Math.random() * 15;
-        });
-      }, 200);
-      
-      // Create local URL for video playback
+      // Create local URL for video playback immediately
       const localUrl = URL.createObjectURL(file);
       setVideoUrl(localUrl);
       
-      // Extract audio and upload it
-      const audioUrl = await uploadAudio(file);
+      // Upload with real progress tracking
+      const audioUrl = await uploadAudio(file, (progress) => {
+        setUploadProgress(progress);
+      });
       
-      clearInterval(progressInterval);
+      // Set to 100% on completion
       setUploadProgress(100);
       
       if (!audioUrl) {
