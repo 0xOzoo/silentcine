@@ -22,9 +22,11 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const [uploadEta, setUploadEta] = useState<number | null>(null); // seconds remaining
   const uploadStartTimeRef = useRef<number>(0);
   const lastUploadedRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
+  const fileSizeRef = useRef<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -85,6 +87,21 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     return { audioTracks, subtitleTracks };
   };
 
+  // Format seconds to human readable time
+  const formatEta = (seconds: number): string => {
+    if (seconds < 60) {
+      return `${Math.round(seconds)}s`;
+    } else if (seconds < 3600) {
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+    } else {
+      const hours = Math.floor(seconds / 3600);
+      const mins = Math.round((seconds % 3600) / 60);
+      return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && session) {
@@ -92,9 +109,11 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       setIsUploading(true);
       setUploadProgress(0);
       setUploadSpeed(null);
+      setUploadEta(null);
       uploadStartTimeRef.current = Date.now();
       lastUploadedRef.current = 0;
       lastTimeRef.current = Date.now();
+      fileSizeRef.current = file.size;
       
       // Create local URL for video playback immediately
       const localUrl = URL.createObjectURL(file);
@@ -106,7 +125,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       const audioUrl = await uploadAudio(file, (progress) => {
         setUploadProgress(progress);
         
-        // Calculate upload speed (MB/s)
+        // Calculate upload speed (MB/s) and ETA
         const currentTime = Date.now();
         const bytesUploaded = (progress / 100) * fileSize;
         const timeDiff = (currentTime - lastTimeRef.current) / 1000; // seconds
@@ -117,6 +136,13 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           const speedMBps = speedBytesPerSec / (1024 * 1024);
           setUploadSpeed(speedMBps);
           
+          // Calculate ETA
+          if (speedBytesPerSec > 0) {
+            const remainingBytes = fileSize - bytesUploaded;
+            const etaSeconds = remainingBytes / speedBytesPerSec;
+            setUploadEta(etaSeconds);
+          }
+          
           lastUploadedRef.current = bytesUploaded;
           lastTimeRef.current = currentTime;
         }
@@ -125,6 +151,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       // Set to 100% on completion
       setUploadProgress(100);
       setUploadSpeed(null);
+      setUploadEta(null);
       
       if (!audioUrl) {
         toast.info("Video loaded locally. Listeners will sync with your playback.");
@@ -402,7 +429,14 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                     </span>
                   )}
                 </span>
-                <span>{Math.round(uploadProgress)}%</span>
+                <span className="flex items-center gap-2">
+                  {uploadEta !== null && uploadEta > 0 && uploadProgress < 99 && (
+                    <span className="text-muted-foreground/70">
+                      ~{formatEta(uploadEta)} left
+                    </span>
+                  )}
+                  <span className="font-medium">{Math.round(uploadProgress)}%</span>
+                </span>
               </div>
               <Progress value={uploadProgress} className="h-2" />
             </motion.div>
