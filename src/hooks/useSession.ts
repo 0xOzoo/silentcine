@@ -161,54 +161,84 @@ export function useHostSession() {
     }
   }, [session, hostToken]);
 
-  // Upload audio file via edge function (secure with host token)
-  const uploadAudio = useCallback(async (file: File) => {
+  // Upload audio file via edge function (secure with host token) with real progress tracking
+  const uploadAudio = useCallback(async (
+    file: File,
+    onProgress?: (progress: number) => void
+  ): Promise<string | null> => {
     if (!session || !hostToken) {
       toast.error("Session or host token not available");
       return null;
     }
     
     setIsLoading(true);
-    try {
+    
+    return new Promise((resolve) => {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("sessionId", session.id);
 
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`,
-        {
-          method: "POST",
-          headers: {
-            "x-host-token": hostToken, // Pass host token for authorization
-          },
-          body: formData,
+      const xhr = new XMLHttpRequest();
+      
+      // Track upload progress
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = (event.loaded / event.total) * 100;
+          onProgress?.(percentComplete);
         }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Upload failed");
-      }
-
-      const { url, fileName } = await response.json();
-
-      // Update session with audio URL via secure edge function
-      const success = await updateSession({
-        audio_url: url,
-        audio_filename: fileName,
       });
 
-      if (!success) throw new Error("Failed to update session");
+      xhr.addEventListener("load", async () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            const { url, fileName } = response;
 
-      toast.success("Audio uploaded successfully!");
-      return url;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to upload audio";
-      toast.error(message);
-      return null;
-    } finally {
-      setIsLoading(false);
-    }
+            // Update session with audio URL via secure edge function
+            const success = await updateSession({
+              audio_url: url,
+              audio_filename: fileName,
+            });
+
+            if (!success) {
+              toast.error("Failed to update session");
+              resolve(null);
+            } else {
+              toast.success("Audio uploaded successfully!");
+              resolve(url);
+            }
+          } catch {
+            toast.error("Failed to parse upload response");
+            resolve(null);
+          }
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            toast.error(errorData.error || "Upload failed");
+          } catch {
+            toast.error("Upload failed");
+          }
+          resolve(null);
+        }
+        setIsLoading(false);
+      });
+
+      xhr.addEventListener("error", () => {
+        toast.error("Upload failed - network error");
+        setIsLoading(false);
+        resolve(null);
+      });
+
+      xhr.addEventListener("abort", () => {
+        toast.error("Upload cancelled");
+        setIsLoading(false);
+        resolve(null);
+      });
+
+      xhr.open("POST", `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`);
+      xhr.setRequestHeader("x-host-token", hostToken);
+      xhr.send(formData);
+    });
   }, [session, hostToken, updateSession]);
 
   // Update session with video URL and tracks
