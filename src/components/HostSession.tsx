@@ -21,6 +21,10 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const uploadStartTimeRef = useRef<number>(0);
+  const lastUploadedRef = useRef<number>(0);
+  const lastTimeRef = useRef<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
@@ -87,18 +91,40 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       setVideoFile(file);
       setIsUploading(true);
       setUploadProgress(0);
+      setUploadSpeed(null);
+      uploadStartTimeRef.current = Date.now();
+      lastUploadedRef.current = 0;
+      lastTimeRef.current = Date.now();
       
       // Create local URL for video playback immediately
       const localUrl = URL.createObjectURL(file);
       setVideoUrl(localUrl);
       
-      // Upload with real progress tracking
+      const fileSize = file.size;
+      
+      // Upload with real progress tracking and speed calculation
       const audioUrl = await uploadAudio(file, (progress) => {
         setUploadProgress(progress);
+        
+        // Calculate upload speed (MB/s)
+        const currentTime = Date.now();
+        const bytesUploaded = (progress / 100) * fileSize;
+        const timeDiff = (currentTime - lastTimeRef.current) / 1000; // seconds
+        
+        if (timeDiff >= 0.5) { // Update speed every 500ms for stability
+          const bytesDiff = bytesUploaded - lastUploadedRef.current;
+          const speedBytesPerSec = bytesDiff / timeDiff;
+          const speedMBps = speedBytesPerSec / (1024 * 1024);
+          setUploadSpeed(speedMBps);
+          
+          lastUploadedRef.current = bytesUploaded;
+          lastTimeRef.current = currentTime;
+        }
       });
       
       // Set to 100% on completion
       setUploadProgress(100);
+      setUploadSpeed(null);
       
       if (!audioUrl) {
         toast.info("Video loaded locally. Listeners will sync with your playback.");
@@ -366,7 +392,16 @@ const HostSession = ({ onBack }: HostSessionProps) => {
               className="w-full mb-4"
             >
               <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>Processing video...</span>
+                <span className="flex items-center gap-1.5">
+                  Uploading...
+                  {uploadSpeed !== null && uploadSpeed > 0 && (
+                    <span className="text-primary font-medium">
+                      {uploadSpeed >= 1 
+                        ? `${uploadSpeed.toFixed(1)} MB/s` 
+                        : `${(uploadSpeed * 1024).toFixed(0)} KB/s`}
+                    </span>
+                  )}
+                </span>
                 <span>{Math.round(uploadProgress)}%</span>
               </div>
               <Progress value={uploadProgress} className="h-2" />
