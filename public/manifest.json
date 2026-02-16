@@ -1,0 +1,18 @@
+{
+  "name": "SilentScreen",
+  "short_name": "SilentScreen",
+  "description": "Outdoor movies, personal sound. Stream synchronized audio to your phone.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "any",
+  "theme_color": "#0a0a0c",
+  "background_color": "#0a0a0c",
+  "categories": ["entertainment", "lifestyle"],
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

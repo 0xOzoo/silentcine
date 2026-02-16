@@ -303,6 +303,7 @@ Deno.serve(async (req) => {
             selected_audio_track: data.selected_audio_track ?? 0,
             selected_subtitle_track: data.selected_subtitle_track ?? -1,
           },
+          serverTimestamp: Date.now(),
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

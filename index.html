@@ -2,11 +2,19 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SilentScreen - Outdoor Movies, Personal Sound</title>
     <meta name="description" content="Host outdoor movie screenings without disturbing neighbors. Viewers scan a QR code to stream synchronized audio directly to their phones." />
     <meta name="author" content="SilentScreen" />
     <meta name="theme-color" content="#0a0a0c" />
+
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SilentScreen" />
+
+    <!-- iOS safe area -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
     <meta property="og:title" content="SilentScreen - Outdoor Movies, Personal Sound" />
     <meta property="og:description" content="Host outdoor screenings without disturbing neighbors. Audio streams directly to viewers' phones." />

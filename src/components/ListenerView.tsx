@@ -1,12 +1,17 @@
-import { useState, useRef, useEffect } from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones, ScanLine } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones, ScanLine, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 import SyncCalibration from "./SyncCalibration";
 import TrackSelector from "./TrackSelector";
 import QRScanner from "./QRScanner";
+
+const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+const DEBUG = import.meta.env.DEV;
+const log = (...args: unknown[]) => { if (DEBUG) console.log('[SilentCine]', ...args); };
 
 interface ListenerViewProps {
   onBack: () => void;
@@ -24,10 +29,18 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [shouldAutoConnect, setShouldAutoConnect] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(!IS_MOBILE);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const audioRef = useRef<HTMLVideoElement>(null);
   const lastSyncRef = useRef<string | null>(null);
+  const sessionRef = useRef(sessionId || "");
 
-  const { session, isConnected, isLoading, connect } = useListenerSession(inputCode);
+  const { session, isConnected, isLoading, networkLatencyMs, connect } = useListenerSession(inputCode);
+
+  // Keep ref in sync for cleanup effect
+  useEffect(() => {
+    sessionRef.current = inputCode;
+  }, [inputCode]);
 
   const handleConnect = async () => {
     if (inputCode.length > 0) {
@@ -48,6 +61,47 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     setShouldAutoConnect(true);
   };
 
+  // Unlock AudioContext on mobile via user gesture
+  const unlockAudio = useCallback(async () => {
+    try {
+      const audio = audioRef.current;
+      if (audio) {
+        // Play and immediately pause a silent moment to unlock the AudioContext
+        audio.muted = true;
+        audio.volume = 0;
+        await audio.play();
+        audio.pause();
+        audio.muted = isMuted;
+        audio.volume = isMuted ? 0 : volume / 100;
+        audio.currentTime = 0;
+      }
+
+      // Also unlock a raw AudioContext (some browsers need this separately)
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const buffer = ctx.createBuffer(1, 1, 22050);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
+        // Resume if suspended
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+        // Clean up after a short delay
+        setTimeout(() => ctx.close().catch(() => {}), 100);
+      }
+
+      setAudioUnlocked(true);
+      setAudioError(null);
+      log('Audio unlocked successfully');
+    } catch (err) {
+      log('Audio unlock failed:', err);
+      setAudioError('Audio permission denied. Please allow audio and try again.');
+    }
+  }, [isMuted, volume]);
+
   const toggleMute = () => {
     setIsMuted(!isMuted);
     if (audioRef.current) {
@@ -65,8 +119,6 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   // Handle audio track change
   const handleAudioTrackChange = (index: number) => {
     setSelectedAudioTrack(index);
-    // In a real implementation, this would switch the audio track
-    // For now, we just store the preference
   };
 
   // Handle subtitle track change
@@ -75,55 +127,83 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     if (index === -1) {
       setCurrentSubtitle(null);
     }
-    // In a real implementation, this would enable/disable subtitle tracks
   };
 
-  // Sync playback with host (with calibration offset)
+  // Sync playback with host (with calibration offset and latency compensation)
   useEffect(() => {
     if (!session || !audioRef.current || !session.audio_url) return;
-    
-    // Only sync if the sync timestamp has changed
-    if (lastSyncRef.current === session.last_sync_at) return;
-    lastSyncRef.current = session.last_sync_at;
+    // Don't attempt playback until audio is unlocked on mobile
+    if (!audioUnlocked) return;
 
     const audio = audioRef.current;
+
+    // Sync on every poll update (not just when last_sync_at changes)
+    // This ensures continuous drift correction even when host keeps playing
     const targetTimeSeconds = session.current_time_ms / 1000;
+
+    // Calculate time elapsed since the host last synced state
+    const syncTimestamp = session.last_sync_at ? new Date(session.last_sync_at).getTime() : Date.now();
+    const timeSinceSync = Math.max(0, (Date.now() - syncTimestamp) / 1000);
     
-    // Calculate time drift compensation with sync offset
-    const timeSinceSync = (Date.now() - new Date(session.last_sync_at).getTime()) / 1000;
+    // Apply user calibration offset and network latency compensation
     const offsetSeconds = syncOffset / 1000;
-    const compensatedTime = session.is_playing 
-      ? targetTimeSeconds + timeSinceSync + offsetSeconds
+    const latencyCompensation = networkLatencyMs / 1000;
+
+    // If playing, extrapolate where playback should be now
+    // Add latency compensation to account for network delay
+    const compensatedTime = session.is_playing
+      ? targetTimeSeconds + timeSinceSync + offsetSeconds + latencyCompensation
       : targetTimeSeconds + offsetSeconds;
 
-    // Only seek if we're more than 0.5 seconds off
+    // Drift threshold: only seek if >0.5s off (avoids micro-stutters)
     const currentDiff = Math.abs(audio.currentTime - compensatedTime);
     if (currentDiff > 0.5) {
+      log(`Sync correction: drift=${currentDiff.toFixed(2)}s, latency=${networkLatencyMs}ms, seeking to ${compensatedTime.toFixed(2)}s`);
       audio.currentTime = Math.max(0, compensatedTime);
     }
 
-    // Handle play/pause
+    // Handle play/pause state transitions
     if (session.is_playing && audio.paused) {
-      audio.play().catch(err => console.log('Autoplay blocked:', err));
-      setLocalIsPlaying(true);
+      audio.play()
+        .then(() => {
+          setLocalIsPlaying(true);
+          log('Playback started via sync');
+        })
+        .catch(err => {
+          log('Play blocked by browser:', err);
+          // If play fails on mobile, reset unlock state so overlay re-appears
+          if (IS_MOBILE) {
+            setAudioUnlocked(false);
+            setAudioError('Tap "Enable Audio" to resume playback');
+          }
+        });
     } else if (!session.is_playing && !audio.paused) {
       audio.pause();
       setLocalIsPlaying(false);
+      log('Playback paused via sync');
     }
-  }, [session, syncOffset]);
+  }, [session, syncOffset, audioUnlocked, networkLatencyMs]);
 
-  // Handle manual play/pause toggle
-  const togglePlay = () => {
-    if (!audioRef.current) return;
+  // Listener play button: force re-sync with host state (not independent control)
+  const resyncWithHost = useCallback(() => {
+    if (!audioRef.current || !session) return;
     
-    if (localIsPlaying) {
+    if (session.is_playing) {
+      // Re-sync: calculate where host is now and seek there
+      const targetTimeSeconds = session.current_time_ms / 1000;
+      const syncTimestamp = session.last_sync_at ? new Date(session.last_sync_at).getTime() : Date.now();
+      const timeSinceSync = Math.max(0, (Date.now() - syncTimestamp) / 1000);
+      const compensatedTime = targetTimeSeconds + timeSinceSync + (syncOffset / 1000) + (networkLatencyMs / 1000);
+      audioRef.current.currentTime = Math.max(0, compensatedTime);
+      audioRef.current.play()
+        .then(() => setLocalIsPlaying(true))
+        .catch(err => log('Resync play blocked:', err));
+    } else {
+      // Host is paused - pause locally too
       audioRef.current.pause();
       setLocalIsPlaying(false);
-    } else {
-      audioRef.current.play().catch(err => console.log('Play blocked:', err));
-      setLocalIsPlaying(true);
     }
-  };
+  }, [session, syncOffset, networkLatencyMs]);
 
   // Get available tracks from session
   const audioTracks: AudioTrack[] = session?.audio_tracks || [];
@@ -241,6 +321,51 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             animate={{ opacity: 1, scale: 1 }}
             className="cinema-card rounded-3xl p-8 border border-border"
           >
+            {/* Mobile Audio Unlock Overlay */}
+            <AnimatePresence>
+              {isConnected && !audioUnlocked && session?.audio_url && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+                >
+                  <motion.div
+                    initial={{ scale: 0.9, y: 20 }}
+                    animate={{ scale: 1, y: 0 }}
+                    exit={{ scale: 0.9, y: 20 }}
+                    className="bg-card border border-border rounded-3xl p-8 max-w-sm w-full text-center"
+                  >
+                    <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-primary/10 flex items-center justify-center">
+                      <Headphones className="w-10 h-10 text-primary" />
+                    </div>
+                    <h3 className="font-display text-xl font-bold text-foreground mb-2">
+                      Enable Audio
+                    </h3>
+                    <p className="text-muted-foreground text-sm mb-6">
+                      Your browser requires a tap to start audio playback.
+                      Make sure your headphones are connected.
+                    </p>
+                    {audioError && (
+                      <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-destructive/10 text-destructive text-sm">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                        {audioError}
+                      </div>
+                    )}
+                    <Button
+                      variant="hero"
+                      size="xl"
+                      className="w-full"
+                      onClick={unlockAudio}
+                    >
+                      <Play className="w-5 h-5 mr-2" />
+                      Tap to Enable Audio
+                    </Button>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Session Header */}
             <div className="text-center mb-8">
               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
@@ -263,9 +388,17 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 ref={audioRef}
                 src={session.audio_url}
                 preload="auto"
-                crossOrigin="anonymous"
                 playsInline
                 style={{ display: 'none' }}
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  log('Audio load error:', target.error?.message, 'code:', target.error?.code);
+                  setAudioError(`Failed to load audio: ${target.error?.message || 'Unknown error'}`);
+                }}
+                onCanPlay={() => {
+                  log('Audio ready to play');
+                  setAudioError(null);
+                }}
               />
             )}
 
@@ -320,26 +453,29 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               <p className="text-muted-foreground text-sm">
                 {!session?.audio_url 
                   ? "Waiting for host to upload video..." 
+                  : !audioUnlocked
+                    ? "Tap to enable audio..."
                   : localIsPlaying 
                     ? "Audio streaming..." 
                     : session?.is_playing 
-                      ? "Tap PLAY to start audio" 
+                      ? "Syncing with host..." 
                       : "Waiting for host to start playback..."}
               </p>
               
-              {/* Debug info for troubleshooting */}
-              {session?.audio_url && !localIsPlaying && (
-                <p className="text-xs text-muted-foreground/50 mt-2">
-                  Audio ready • Tap play button below
-                </p>
+              {/* Audio error display */}
+              {audioError && audioUnlocked && (
+                <div className="flex items-center justify-center gap-2 mt-2 text-xs text-destructive">
+                  <AlertCircle className="w-3 h-3" />
+                  {audioError}
+                </div>
               )}
             </div>
 
-            {/* Play Button */}
+            {/* Sync Button - re-syncs with host, not independent play/pause */}
             <div className="flex justify-center mb-8">
               <button
-                onClick={togglePlay}
-                disabled={!session?.audio_url}
+                onClick={resyncWithHost}
+                disabled={!session?.audio_url || !audioUnlocked}
                 className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-glow-secondary flex items-center justify-center shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {localIsPlaying ? (
@@ -393,10 +529,33 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               />
             </div>
 
+            {/* Sync Status Indicator */}
+            {audioUnlocked && session?.audio_url && (
+              <div className="flex items-center justify-center gap-3 mb-4 text-xs text-muted-foreground">
+                <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full ${
+                  networkLatencyMs < 100 ? 'bg-green-500/10 text-green-500' :
+                  networkLatencyMs < 300 ? 'bg-yellow-500/10 text-yellow-500' :
+                  'bg-red-500/10 text-red-500'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    networkLatencyMs < 100 ? 'bg-green-500' :
+                    networkLatencyMs < 300 ? 'bg-yellow-500' :
+                    'bg-red-500'
+                  }`} />
+                  {networkLatencyMs}ms
+                </span>
+                {syncOffset !== 0 && (
+                  <span className="text-muted-foreground/70">
+                    offset: {syncOffset > 0 ? '+' : ''}{syncOffset}ms
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* Tips */}
             <div className="mt-4 p-4 rounded-xl bg-muted/30 border border-border">
               <p className="text-xs text-muted-foreground text-center">
-                💡 For the best experience, use headphones and keep this screen open
+                For the best experience, use headphones and keep this screen open
               </p>
             </div>
           </motion.div>

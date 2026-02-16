@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+
+const DEBUG = import.meta.env.DEV;
+const log = (...args: unknown[]) => { if (DEBUG) console.log('[Session]', ...args); };
 
 export interface AudioTrack {
   index: number;
@@ -98,9 +101,9 @@ export function useHostSession() {
           },
         }
       );
-      console.log("Session terminated");
+      log("Session terminated");
     } catch (err) {
-      console.error("Failed to terminate session:", err);
+      log("Failed to terminate session:", err);
     }
   }, []);
 
@@ -156,7 +159,7 @@ export function useHostSession() {
       setSession(updatedSession);
       return true;
     } catch (err) {
-      console.error("Failed to update session:", err);
+      log("Failed to update session:", err);
       return false;
     }
   }, [session, hostToken]);
@@ -313,7 +316,7 @@ export function useHostSession() {
       const tenMinutes = 10 * 60 * 1000;
 
       if (listeners.length === 0 && idleTime >= tenMinutes) {
-        console.log("Session idle for 10 minutes with no listeners, terminating...");
+        log("Session idle for 10 minutes with no listeners, terminating...");
         terminateSession(session.id, hostToken);
       }
     }, 60000); // Check every minute
@@ -372,6 +375,8 @@ export function useListenerSession(sessionCode: string) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listenerToken] = useState(() => generateListenerToken());
+  const [networkLatencyMs, setNetworkLatencyMs] = useState(0);
+  const latencySamplesRef = useRef<number[]>([]);
 
   // Helper to call listener manager edge function
   const callListenerManager = useCallback(async (
@@ -448,40 +453,69 @@ export function useListenerSession(sessionCode: string) {
     try {
       await callListenerManager("leave", "DELETE", { sessionId: session.id });
     } catch (err) {
-      console.error("Failed to disconnect:", err);
+      log("Failed to disconnect:", err);
     }
     
     setIsConnected(false);
     setSession(null);
   }, [session, callListenerManager]);
 
+  // Store session info in refs to avoid stale closures in poll intervals
+  const sessionIdRef = useRef<string | null>(null);
+  const sessionCodeRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sessionIdRef.current = session?.id ?? null;
+    sessionCodeRef.current = session?.code ?? null;
+  }, [session?.id, session?.code]);
+
   // Poll for session updates (since realtime requires direct table access with RLS)
   useEffect(() => {
     if (!session || !isConnected) return;
 
-    const sessionId = session.id;
-    const sessionCode = session.code;
+    const initialSessionId = session.id;
+    const initialSessionCode = session.code;
 
     // Poll for session updates every 2 seconds
     const pollSession = async () => {
+      const code = sessionCodeRef.current || initialSessionCode;
+      const requestTime = Date.now();
       try {
         const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${sessionCode}`,
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${code}`,
           { method: "GET" }
         );
         
         if (response.ok) {
-          const { session: updatedSession } = await response.json();
+          const responseTime = Date.now();
+          const { session: updatedSession, serverTimestamp } = await response.json();
+
+          // Calculate network latency using round-trip time
+          if (serverTimestamp) {
+            const rtt = responseTime - requestTime;
+            const oneWayLatency = rtt / 2;
+            
+            // Exponential moving average for jitter smoothing
+            const samples = latencySamplesRef.current;
+            samples.push(oneWayLatency);
+            // Keep last 10 samples
+            if (samples.length > 10) samples.shift();
+            
+            // Use median (more robust than mean against outliers)
+            const sorted = [...samples].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            setNetworkLatencyMs(median);
+          }
+
           setSession(updatedSession);
         } else if (response.status === 404) {
           // Session was terminated by host
-          console.log("Session terminated by host");
           setIsConnected(false);
           setSession(null);
           toast.error("Session ended by host");
         }
-      } catch (err) {
-        console.error("Failed to poll session:", err);
+      } catch {
+        // Network error during poll - ignore, will retry next interval
       }
     };
 
@@ -493,6 +527,7 @@ export function useListenerSession(sessionCode: string) {
 
     // Ping every 30 seconds to stay connected via edge function
     const pingInterval = setInterval(async () => {
+      const sid = sessionIdRef.current || initialSessionId;
       try {
         await fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager?action=ping`,
@@ -502,11 +537,11 @@ export function useListenerSession(sessionCode: string) {
               "Content-Type": "application/json",
               "x-listener-token": listenerToken,
             },
-            body: JSON.stringify({ sessionId }),
+            body: JSON.stringify({ sessionId: sid }),
           }
         );
-      } catch (err) {
-        console.error("Failed to ping:", err);
+      } catch {
+        // Ping failure - ignore, will retry next interval
       }
     }, 30000);
 
@@ -516,13 +551,14 @@ export function useListenerSession(sessionCode: string) {
     };
   }, [isConnected, listenerToken]);
 
-  // Cleanup on unmount only
+  // Cleanup on unmount - use refs to avoid stale closure
   useEffect(() => {
     return () => {
-      if (session) {
+      const sid = sessionIdRef.current;
+      if (sid) {
         // Fire and forget cleanup on unmount
         fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager?action=leave&sessionId=${session.id}`,
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/listener-manager?action=leave&sessionId=${sid}`,
           {
             method: "DELETE",
             headers: {
@@ -534,13 +570,14 @@ export function useListenerSession(sessionCode: string) {
         ).catch(() => {});
       }
     };
-  }, []);
+  }, [listenerToken]);
 
   return {
     session,
     isConnected,
     isLoading,
     error,
+    networkLatencyMs,
     connect,
     disconnect,
   };
