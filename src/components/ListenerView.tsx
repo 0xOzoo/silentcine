@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Play, Pause, Volume2, VolumeX, Headphones, ScanLine, AlertCircle } from "lucide-react";
+import { ArrowLeft, Play, Volume2, VolumeX, Headphones, ScanLine, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
@@ -35,7 +35,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const lastSyncRef = useRef<string | null>(null);
   const sessionRef = useRef(sessionId || "");
 
-  const { session, isConnected, isLoading, networkLatencyMs, connect } = useListenerSession(inputCode);
+  const { session, isConnected, isLoading, networkLatencyMs, syncIntervalMs, setSyncIntervalMs, connect } = useListenerSession(inputCode);
 
   // Keep ref in sync for cleanup effect
   useEffect(() => {
@@ -183,27 +183,6 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
       log('Playback paused via sync');
     }
   }, [session, syncOffset, audioUnlocked, networkLatencyMs]);
-
-  // Listener play button: force re-sync with host state (not independent control)
-  const resyncWithHost = useCallback(() => {
-    if (!audioRef.current || !session) return;
-    
-    if (session.is_playing) {
-      // Re-sync: calculate where host is now and seek there
-      const targetTimeSeconds = session.current_time_ms / 1000;
-      const syncTimestamp = session.last_sync_at ? new Date(session.last_sync_at).getTime() : Date.now();
-      const timeSinceSync = Math.max(0, (Date.now() - syncTimestamp) / 1000);
-      const compensatedTime = targetTimeSeconds + timeSinceSync + (syncOffset / 1000) + (networkLatencyMs / 1000);
-      audioRef.current.currentTime = Math.max(0, compensatedTime);
-      audioRef.current.play()
-        .then(() => setLocalIsPlaying(true))
-        .catch(err => log('Resync play blocked:', err));
-    } else {
-      // Host is paused - pause locally too
-      audioRef.current.pause();
-      setLocalIsPlaying(false);
-    }
-  }, [session, syncOffset, networkLatencyMs]);
 
   // Get available tracks from session
   const audioTracks: AudioTrack[] = session?.audio_tracks || [];
@@ -471,17 +450,17 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               )}
             </div>
 
-            {/* Sync Button - re-syncs with host, not independent play/pause */}
+            {/* Mute Button */}
             <div className="flex justify-center mb-8">
               <button
-                onClick={resyncWithHost}
+                onClick={toggleMute}
                 disabled={!session?.audio_url || !audioUnlocked}
                 className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-glow-secondary flex items-center justify-center shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {localIsPlaying ? (
-                  <Pause className="w-8 h-8 text-primary-foreground" />
+                {isMuted ? (
+                  <VolumeX className="w-8 h-8 text-primary-foreground" />
                 ) : (
-                  <Play className="w-8 h-8 text-primary-foreground ml-1" />
+                  <Volume2 className="w-8 h-8 text-primary-foreground" />
                 )}
               </button>
             </div>
@@ -531,24 +510,37 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
 
             {/* Sync Status Indicator */}
             {audioUnlocked && session?.audio_url && (
-              <div className="flex items-center justify-center gap-3 mb-4 text-xs text-muted-foreground">
-                <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full ${
-                  networkLatencyMs < 100 ? 'bg-green-500/10 text-green-500' :
-                  networkLatencyMs < 300 ? 'bg-yellow-500/10 text-yellow-500' :
-                  'bg-red-500/10 text-red-500'
-                }`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${
-                    networkLatencyMs < 100 ? 'bg-green-500' :
-                    networkLatencyMs < 300 ? 'bg-yellow-500' :
-                    'bg-red-500'
-                  }`} />
-                  {networkLatencyMs}ms
-                </span>
-                {syncOffset !== 0 && (
-                  <span className="text-muted-foreground/70">
-                    offset: {syncOffset > 0 ? '+' : ''}{syncOffset}ms
+              <div className="flex flex-col items-center gap-2 mb-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-3">
+                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full ${
+                    networkLatencyMs < 100 ? 'bg-green-500/10 text-green-500' :
+                    networkLatencyMs < 300 ? 'bg-yellow-500/10 text-yellow-500' :
+                    'bg-red-500/10 text-red-500'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${
+                      networkLatencyMs < 100 ? 'bg-green-500' :
+                      networkLatencyMs < 300 ? 'bg-yellow-500' :
+                      'bg-red-500'
+                    }`} />
+                    {networkLatencyMs}ms
                   </span>
-                )}
+                  {syncOffset !== 0 && (
+                    <span className="text-muted-foreground/70">
+                      offset: {syncOffset > 0 ? '+' : ''}{syncOffset}ms
+                    </span>
+                  )}
+                </div>
+                {/* Sync speed toggle: 1s outdoor / 2s indoor */}
+                <button
+                  onClick={() => setSyncIntervalMs(syncIntervalMs <= 1000 ? 2000 : 1000)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-colors ${
+                    syncIntervalMs <= 1000
+                      ? 'border-primary/40 bg-primary/10 text-primary'
+                      : 'border-border bg-muted/30 text-muted-foreground hover:border-primary/30'
+                  }`}
+                >
+                  {syncIntervalMs <= 1000 ? 'Outdoor mode (1s sync)' : 'Indoor mode (2s sync)'}
+                </button>
               </div>
             )}
 

@@ -26,7 +26,7 @@ interface HostSessionProps {
 }
 
 const HostSession = ({ onBack }: HostSessionProps) => {
-  const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState, updateVideoInfo } = useHostSession();
+  const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState, updateVideoInfo, updateAudioUrl } = useHostSession();
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -42,6 +42,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const lastTimeRef = useRef<number>(0);
   const fileSizeRef = useRef<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isProjectorMode, setIsProjectorMode] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -194,39 +195,45 @@ const HostSession = ({ onBack }: HostSessionProps) => {
 
     // Create local URL for video playback immediately (works for video files)
     if (isVideoFile(file)) {
+      // ── Early guard: block oversized files on mobile BEFORE loading FFmpeg WASM (~25MB) ──
+      const sizeLimit = getFileSizeLimit();
+      if (file.size > sizeLimit) {
+        const mobile = isMobileHost();
+        setPipelinePhase("error");
+        setPipelineError(
+          `File is too large (${(file.size / (1024 * 1024)).toFixed(0)} MB). ` +
+          `Maximum for ${mobile ? 'mobile' : 'desktop'} is ${(sizeLimit / (1024 * 1024 * 1024)).toFixed(0) !== '0' ? (sizeLimit / (1024 * 1024 * 1024)).toFixed(0) + ' GB' : (sizeLimit / (1024 * 1024)).toFixed(0) + ' MB'}.` +
+          (mobile ? ' Use a laptop to host full-length movies.' : '')
+        );
+        setShowFallbackHelp(true);
+        return;
+      }
+
       setVideoFile(file);
       const localUrl = URL.createObjectURL(file);
       setVideoUrl(localUrl);
 
-      // ── Video file: extract audio first, then upload ──
+      // ── Video file: upload to storage + extract via server ──
       setPipelinePhase("extracting");
       setIsUploading(true);
 
       try {
-        const audioBlob = await extractAudioFromVideo(file, (progress) => {
+        // extractAudioFromVideo now handles: upload to storage, trigger Pi, poll for result
+        // Returns a signed URL for the extracted audio
+        const signedAudioUrl = await extractAudioFromVideo(file, (progress) => {
           setExtractionProgress(progress);
         });
 
-        // Free ffmpeg memory now that extraction is done
-        terminateFFmpeg();
-
-        // Derive a filename for the extracted audio
+        // Update the session so listeners can stream the extracted audio
         const baseName = file.name.replace(/\.[^.]+$/, "");
-        const audioFileName = `${baseName}.mp3`;
-
-        const audioUrl = await uploadFileToSupabase(audioBlob, audioFileName);
+        await updateAudioUrl(signedAudioUrl, `${baseName}.mp3`);
 
         setPipelinePhase("done");
-
-        if (!audioUrl) {
-          toast.info("Video loaded locally. Audio extraction succeeded but upload failed — listeners cannot hear audio yet.");
-        } else {
-          toast.success("Audio extracted and uploaded! Listeners can now connect.");
-        }
+        setIsUploading(false);
+        toast.success("Audio extracted and uploaded! Listeners can now connect.");
       } catch (err) {
         setPipelinePhase("error");
         setIsUploading(false);
-        terminateFFmpeg();
 
         if (err instanceof ExtractionError) {
           setPipelineError(err.message);
@@ -379,10 +386,8 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           break;
         case "KeyM":
           e.preventDefault();
-          // Toggle mute on the video element (host projector audio)
-          if (videoRef.current) {
-            videoRef.current.muted = !videoRef.current.muted;
-          }
+          // Toggle between projector mode (muted) and test mode (audio on)
+          setIsProjectorMode(prev => !prev);
           break;
       }
     };
@@ -431,18 +436,6 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     }
   }, [session, sessionUrl]);
 
-  const toggleFullscreen = useCallback(async () => {
-    if (!containerRef.current) return;
-    
-    if (!document.fullscreenElement) {
-      await containerRef.current.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      await document.exitFullscreen();
-      setIsFullscreen(false);
-    }
-  }, []);
-
   // Listen for fullscreen changes
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -490,7 +483,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             onEnded={handleEnded}
             onClick={togglePlayback}
             playsInline
-            muted
+            muted={isProjectorMode}
             crossOrigin="anonymous"
           />
           
@@ -542,6 +535,14 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
               </Button>
               
+              {/* Projector / Test mode toggle */}
+              <button
+                onClick={() => setIsProjectorMode(!isProjectorMode)}
+                className="px-3 py-1 bg-yellow-600 rounded text-sm text-white hover:bg-yellow-500 transition-colors"
+              >
+                {isProjectorMode ? 'Projector Mode' : 'Test Mode (Audio On)'}
+              </button>
+
               {/* Fullscreen toggle */}
               <Button
                 variant="ghost"
@@ -567,8 +568,8 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           )}
         </div>
 
-        {/* QR Code Sidebar */}
-        <div className={`flex flex-col items-center justify-center bg-background/95 backdrop-blur ${isFullscreen ? 'w-64 p-4' : 'w-72 p-6 rounded-2xl ml-4'}`}>
+        {/* QR Code Sidebar — high contrast for outdoor/projector readability */}
+        <div className={`flex flex-col items-center justify-center bg-black ${isFullscreen ? 'w-80 p-4' : 'w-80 p-6 rounded-2xl ml-4'}`}>
           {/* Pipeline Status */}
           {pipelinePhase === "extracting" ? (
             <motion.div
@@ -603,11 +604,13 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </div>
           )}
 
-          <h2 className="font-display text-lg font-bold text-foreground mb-1 text-center">
+          <h2 className="font-display text-lg font-bold text-white mb-1 text-center">
             Scan to Listen
           </h2>
-          <p className="text-muted-foreground text-xs mb-4 text-center">
-            Session: {session?.code}
+          {/* Room code — 60px+ for outdoor readability at 10 feet */}
+          <p className="text-white font-display font-bold tracking-[0.3em] text-center mb-4"
+             style={{ fontSize: '64px', lineHeight: 1.1 }}>
+            {session?.code}
           </p>
 
           {/* Pipeline Progress Bar (extraction + upload) */}
@@ -654,11 +657,11 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             </motion.div>
           )}
 
-          {/* QR Code */}
-          <div className="bg-white p-4 rounded-xl mb-4">
+          {/* QR Code — 256px for outdoor scanning distance */}
+          <div className="bg-white p-5 rounded-xl mb-4">
             <QRCodeSVG
               value={sessionUrl}
-              size={160}
+              size={256}
               level="H"
               includeMargin={false}
               bgColor="#ffffff"
@@ -667,7 +670,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           </div>
 
           {/* Listener count */}
-          <div className="flex items-center gap-2 text-muted-foreground mb-4">
+          <div className="flex items-center gap-2 text-white/70 mb-4">
             <Users className="w-4 h-4" />
             <span className="text-sm">
               {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
@@ -676,8 +679,8 @@ const HostSession = ({ onBack }: HostSessionProps) => {
 
           {/* Audio Status */}
           {!isUploading && (
-            <div className={`text-xs mb-3 px-3 py-1.5 rounded-full ${session?.audio_url ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
-              {session?.audio_url ? '✓ Audio ready for listeners' : 'Preparing audio...'}
+            <div className={`text-xs mb-3 px-3 py-1.5 rounded-full ${session?.audio_url ? 'bg-green-500/10 text-green-500' : 'bg-white/10 text-white/60'}`}>
+              {session?.audio_url ? 'Audio ready for listeners' : 'Preparing audio...'}
             </div>
           )}
 
@@ -711,7 +714,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           </div>
 
           {/* Instructions */}
-          <div className="mt-4 text-xs text-muted-foreground text-center">
+          <div className="mt-4 text-xs text-white/50 text-center">
             <p>Point your phone camera at the QR code to get audio</p>
           </div>
         </div>
@@ -815,9 +818,11 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                       className="w-14 h-14 rounded-full border-3 border-violet-500/20 border-t-violet-500 mb-4"
                     />
                     <span className="text-foreground font-medium mb-1">
-                      {extractionProgress.phase === "loading"
-                        ? "Loading audio processor..."
-                        : "Extracting audio from video..."}
+                      {extractionProgress.phase === "uploading"
+                        ? "Uploading video..."
+                        : extractionProgress.phase === "processing"
+                          ? "Server is extracting audio..."
+                          : "Extracting audio from video..."}
                     </span>
                     <span className="text-muted-foreground text-xs mb-3">
                       {extractionProgress.message}
@@ -873,7 +878,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 )}
                 <input
                   type="file"
-                  accept="video/*,audio/*"
+                  accept="video/*,audio/*,.mkv,.avi,.mov,.webm,.mp4,.m4v,.mpeg,.mpg,.mp3,.wav,.ogg,.flac,.aac,.m4a"
                   className="hidden"
                   onChange={handleFileChange}
                   disabled={isUploading || pipelinePhase === 'extracting'}

@@ -1,46 +1,25 @@
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { supabase } from "@/integrations/supabase/client";
 
 const DEBUG = import.meta.env.DEV;
 const log = (...args: unknown[]) => {
   if (DEBUG) console.log("[AudioExtract]", ...args);
 };
 
-/** Maximum file size for mobile extraction (500MB — keeps WASM memory under control). */
-const MAX_EXTRACTION_SIZE_MOBILE = 500 * 1024 * 1024;
+/** Maximum video file size (500MB — server memory constraint). */
+const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
-/** Maximum file size for desktop extraction (4GB — WASM 32-bit address space ceiling). */
-const MAX_EXTRACTION_SIZE_DESKTOP = 4 * 1024 * 1024 * 1024;
+/** Minimum file size to bother extracting */
+const MIN_FILE_SIZE = 1024;
 
-/** Minimum file size to bother extracting (< 1MB is probably already audio) */
-const MIN_EXTRACTION_SIZE = 1 * 1024 * 1024;
+/** How often to poll the movies table for extraction status (ms) */
+const POLL_INTERVAL_MS = 3000;
 
-/**
- * Detect if the host is running on a mobile device.
- * Uses a combination of user agent, pointer capability, and viewport width.
- * Exported so HostSession can use it for pre-upload guards.
- */
-export function isMobileHost(): boolean {
-  const ua = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
-  const coarsePointer =
-    typeof window !== "undefined" &&
-    window.matchMedia("(pointer: coarse)").matches;
-  const narrowViewport = typeof window !== "undefined" && window.innerWidth < 1024;
-  // Must match at least 2 of 3 signals to avoid false positives (e.g. desktop with touch)
-  return [ua, coarsePointer, narrowViewport].filter(Boolean).length >= 2;
-}
-
-/**
- * Get the file size limit for the current device.
- * Desktop: 4GB (WASM 32-bit ceiling), Mobile: 500MB.
- */
-export function getFileSizeLimit(): number {
-  return isMobileHost() ? MAX_EXTRACTION_SIZE_MOBILE : MAX_EXTRACTION_SIZE_DESKTOP;
-}
+/** Maximum time to wait for extraction before timing out (ms) */
+const EXTRACTION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 export interface ExtractionProgress {
-  /** Current phase: 'loading' ffmpeg core, 'extracting' audio, 'done' */
-  phase: "loading" | "extracting" | "done";
+  /** Current phase of the pipeline */
+  phase: "uploading" | "processing" | "done";
   /** 0-100 percent within the current phase */
   percent: number;
   /** Human-readable status message */
@@ -58,323 +37,271 @@ export class ExtractionError extends Error {
   }
 }
 
-// Singleton FFmpeg instance — reused across calls, loaded once
-let ffmpegInstance: FFmpeg | null = null;
-let loadPromise: Promise<void> | null = null;
+/** Movie record from the database */
+export interface MovieRecord {
+  id: string;
+  title: string;
+  status: "uploaded" | "processing" | "ready" | "error";
+  video_path: string;
+  audio_path: string | null;
+  processing_error: string | null;
+  created_at: string;
+}
 
 /**
- * Check if SharedArrayBuffer is available (needed for multi-threaded ffmpeg core).
- * Requires COOP/COEP headers on the page.
+ * Detect if the host is running on a mobile device.
+ * Uses a combination of user agent, pointer capability, and viewport width.
  */
-function isSharedArrayBufferAvailable(): boolean {
+export function isMobileHost(): boolean {
+  const ua = /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
+  const coarsePointer =
+    typeof window !== "undefined" &&
+    window.matchMedia("(pointer: coarse)").matches;
+  const narrowViewport = typeof window !== "undefined" && window.innerWidth < 1024;
+  return [ua, coarsePointer, narrowViewport].filter(Boolean).length >= 2;
+}
+
+/**
+ * Get the file size limit. Server handles extraction so the limit is
+ * about upload size, not browser WASM memory.
+ */
+export function getFileSizeLimit(): number {
+  return MAX_FILE_SIZE;
+}
+
+/**
+ * Extract audio from a video file via server worker.
+ *
+ * Flow:
+ * 1. Upload video to Supabase Storage (movies bucket)
+ * 2. Insert a record in the movies table
+ * 3. POST to server /extract endpoint to trigger extraction
+ * 4. Poll movies table until status is 'ready' or 'error'
+ * 5. Return signed URL for the extracted audio
+ *
+ * @param videoFile - The video file to extract audio from
+ * @param onProgress - Callback for progress updates
+ * @returns The signed URL for the extracted audio file
+ * @throws {ExtractionError} If extraction fails at any stage
+ */
+export async function extractAudioFromVideo(
+  videoFile: File,
+  onProgress?: (p: ExtractionProgress) => void,
+): Promise<string> {
+  // ── Guards ──────────────────────────────────────────────────
+  if (videoFile.size > MAX_FILE_SIZE) {
+    throw new ExtractionError(
+      `File is too large (${formatBytes(videoFile.size)}). Maximum is ${formatBytes(MAX_FILE_SIZE)}.`,
+    );
+  }
+  if (videoFile.size < MIN_FILE_SIZE) {
+    throw new ExtractionError(
+      "File is too small to contain video with audio.",
+      false,
+    );
+  }
+
+  const piUrl = import.meta.env.VITE_PI_WORKER_URL;
+  if (!piUrl) {
+    throw new ExtractionError(
+      "Server worker URL not configured. Set VITE_PI_WORKER_URL in .env.",
+      false,
+    );
+  }
+
+  const emit = (phase: ExtractionProgress["phase"], percent: number, message: string) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    onProgress?.({ phase, percent: isNaN(clamped) ? 0 : clamped, message });
+  };
+
   try {
-    return typeof SharedArrayBuffer !== "undefined";
-  } catch {
-    return false;
+    // ── 1. Upload video to Supabase Storage ─────────────────────
+    emit("uploading", 0, "Uploading video to storage...");
+
+    const fileExt = videoFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
+    const fileName = `${Date.now()}.${fileExt}`;
+    const videoPath = `videos/${fileName}`;
+
+    const { error: storageError } = await supabase.storage
+      .from("movies")
+      .upload(videoPath, videoFile, {
+        cacheControl: "3600",
+        upsert: false,
+      });
+
+    if (storageError) {
+      log("Storage upload failed:", storageError);
+      throw new ExtractionError(
+        `Failed to upload video: ${storageError.message}`,
+      );
+    }
+
+    emit("uploading", 50, "Video uploaded, creating record...");
+
+    // ── 2. Insert movies table record ───────────────────────────
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: movie, error: dbError } = await (supabase as any)
+      .from("movies")
+      .insert({
+        title: videoFile.name,
+        video_path: videoPath,
+        status: "uploaded",
+      })
+      .select()
+      .single();
+
+    if (dbError || !movie) {
+      log("DB insert failed:", dbError);
+      throw new ExtractionError(
+        `Failed to create movie record: ${dbError?.message ?? "Unknown error"}`,
+      );
+    }
+
+    const movieId = (movie as MovieRecord).id;
+    emit("uploading", 80, "Sending to server for extraction...");
+
+    // ── 3. Trigger server extraction ──────────────────────────
+    let piResponse: Response;
+    try {
+      piResponse = await fetch(`${piUrl}/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          movieId,
+          videoPath,
+        }),
+      });
+    } catch (err) {
+      log("Pi worker network error:", err);
+      throw new ExtractionError(
+        "Cannot reach extraction server. Make sure it's running and accessible on your network.",
+        true,
+      );
+    }
+
+    if (!piResponse.ok) {
+      const errText = await piResponse.text().catch(() => "Unknown error");
+      log("Pi worker error:", piResponse.status, errText);
+      throw new ExtractionError(
+        `Server extraction error: ${errText}`,
+        true,
+      );
+    }
+
+    emit("processing", 0, "Server is extracting audio...");
+
+    // ── 4. Poll for extraction result ───────────────────────────
+    const audioUrl = await pollForResult(movieId, emit);
+
+    emit("done", 100, "Audio extraction complete!");
+    log("Extraction complete, audio URL:", audioUrl);
+
+    return audioUrl;
+  } catch (error) {
+    if (error instanceof ExtractionError) throw error;
+    const msg = error instanceof Error ? error.message : String(error);
+    log("Extraction error:", msg);
+    throw new ExtractionError(`Extraction failed: ${msg}`, true);
   }
 }
 
 /**
- * Load the ffmpeg.wasm core (lazy, cached after first call).
- * Downloads ~25MB of WASM from CDN on first use, then cached by browser.
+ * Poll the movies table until extraction is complete or fails.
+ * Returns the signed audio URL on success.
  */
-async function getFFmpeg(
-  onProgress?: (p: ExtractionProgress) => void
-): Promise<FFmpeg> {
-  if (ffmpegInstance?.loaded) {
-    return ffmpegInstance;
-  }
+async function pollForResult(
+  movieId: string,
+  emit: (phase: ExtractionProgress["phase"], percent: number, message: string) => void,
+): Promise<string> {
+  const startTime = Date.now();
+  let lastStatus = "processing";
 
-  // If a load is already in progress, wait for it
-  if (loadPromise) {
-    await loadPromise;
-    if (ffmpegInstance?.loaded) return ffmpegInstance;
-  }
-
-  const ffmpeg = new FFmpeg();
-  ffmpegInstance = ffmpeg;
-
-  // Wire up log output for debugging
-  ffmpeg.on("log", ({ message }) => {
-    log("ffmpeg:", message);
-  });
-
-  loadPromise = (async () => {
-    onProgress?.({
-      phase: "loading",
-      percent: 0,
-      message: "Loading audio processor...",
-    });
-
-    const useMultiThread = isSharedArrayBufferAvailable();
-    log(
-      `Loading ffmpeg core (${useMultiThread ? "multi-threaded" : "single-threaded"})`
-    );
-
-    // Use the single-threaded core from unpkg CDN.
-    // Multi-threaded requires COOP/COEP headers which break external resource loading.
-    // The @ffmpeg/core package version must match @ffmpeg/ffmpeg expectations.
-    const CORE_VERSION = "0.12.6";
-    const baseURL = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd`;
-
-    try {
-      // Convert CDN URLs to blob URLs to avoid CORS issues with some deployment configs
-      const coreURL = await toBlobURL(
-        `${baseURL}/ffmpeg-core.js`,
-        "text/javascript",
-        true,
-        (e) => {
-          onProgress?.({
-            phase: "loading",
-            percent: Math.round(e.received / (e.total || 1) * 50),
-            message: "Downloading audio processor...",
-          });
-        }
-      );
-      const wasmURL = await toBlobURL(
-        `${baseURL}/ffmpeg-core.wasm`,
-        "application/wasm",
-        true,
-        (e) => {
-          onProgress?.({
-            phase: "loading",
-            percent: 50 + Math.round(e.received / (e.total || 1) * 50),
-            message: "Downloading audio processor...",
-          });
-        }
-      );
-
-      await ffmpeg.load({ coreURL, wasmURL });
-    } catch (err) {
-      ffmpegInstance = null;
-      loadPromise = null;
-      log("Failed to load ffmpeg core:", err);
+  while (true) {
+    // Timeout guard
+    if (Date.now() - startTime > EXTRACTION_TIMEOUT_MS) {
       throw new ExtractionError(
-        "Failed to load the audio processor. Check your internet connection and try again.",
-        false
+        "Audio extraction timed out. The video may be too long or the server may be overloaded.",
+        true,
       );
     }
 
-    onProgress?.({
-      phase: "loading",
-      percent: 100,
-      message: "Audio processor ready",
-    });
-  })();
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
 
-  await loadPromise;
-  return ffmpeg;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabase as any)
+      .from("movies")
+      .select("*")
+      .eq("id", movieId)
+      .single();
+
+    if (error) {
+      log("Poll error:", error);
+      continue; // Retry on transient errors
+    }
+
+    const movie = data as unknown as MovieRecord;
+
+    if (movie.status !== lastStatus) {
+      lastStatus = movie.status;
+      log("Status changed to:", movie.status);
+    }
+
+    if (movie.status === "processing") {
+      // Animate an indeterminate progress
+      const elapsed = Date.now() - startTime;
+      const fakePercent = Math.min(90, Math.floor(elapsed / 1000)); // ~1% per second, cap at 90
+      emit("processing", fakePercent, "Server is extracting audio...");
+      continue;
+    }
+
+    if (movie.status === "error") {
+      throw new ExtractionError(
+        movie.processing_error || "Audio extraction failed on server.",
+        true,
+      );
+    }
+
+    if (movie.status === "ready" && movie.audio_path) {
+      // Get a signed URL for the extracted audio (1 hour expiry)
+      const { data: urlData, error: urlError } = await supabase.storage
+        .from("movies")
+        .createSignedUrl(movie.audio_path, 3600);
+
+      if (urlError || !urlData?.signedUrl) {
+        throw new ExtractionError(
+          "Audio was extracted but failed to generate download URL.",
+          true,
+        );
+      }
+
+      return urlData.signedUrl;
+    }
+  }
+}
+
+/**
+ * No-op — kept for API compatibility with HostSession cleanup.
+ * The old ffmpeg.wasm termination is no longer needed since extraction
+ * happens on the server, not in the browser.
+ */
+export function terminateFFmpeg(): void {
+  // No-op: nothing to terminate
 }
 
 /**
  * Check if a file is a video type that needs audio extraction.
- * Audio files are passed through without extraction.
  */
 export function isVideoFile(file: File): boolean {
-  const videoTypes = [
-    "video/mp4",
-    "video/webm",
-    "video/x-matroska",
-    "video/mkv",
-    "video/quicktime",
-    "video/avi",
-    "video/x-msvideo",
-    "video/ogg",
-  ];
-  if (videoTypes.includes(file.type)) return true;
-
-  // Fallback: check extension for files with missing MIME type
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return ["mp4", "webm", "mkv", "mov", "avi", "ogv", "m4v", "ts"].includes(ext);
+  if (file.type.startsWith("video/")) return true;
+  return /\.(mp4|mov|avi|mkv|webm|ogv|m4v|ts|mpeg|mpg)$/i.test(file.name);
 }
 
 /**
  * Check if a file is already an audio file that can be uploaded directly.
  */
 export function isAudioFile(file: File): boolean {
-  const audioTypes = [
-    "audio/mpeg",
-    "audio/mp3",
-    "audio/wav",
-    "audio/ogg",
-    "audio/aac",
-    "audio/flac",
-    "audio/webm",
-    "audio/mp4",
-  ];
-  if (audioTypes.includes(file.type)) return true;
-
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return ["mp3", "wav", "ogg", "aac", "flac", "m4a", "wma", "opus"].includes(ext);
-}
-
-/**
- * Extract audio from a video file using ffmpeg.wasm.
- *
- * Converts to 128kbps stereo MP3 at 44.1kHz — the sweet spot for
- * mobile streaming quality vs file size.
- *
- * @param videoFile - The video file to extract audio from
- * @param onProgress - Callback for progress updates
- * @returns A Blob containing the MP3 audio data
- * @throws {ExtractionError} If extraction fails
- */
-export async function extractAudioFromVideo(
-  videoFile: File,
-  onProgress?: (p: ExtractionProgress) => void
-): Promise<Blob> {
-  // ── Guards ──────────────────────────────────────────────────
-  const maxSize = getFileSizeLimit();
-  const mobile = isMobileHost();
-  if (videoFile.size > maxSize) {
-    const deviceHint = mobile
-      ? " Use a laptop to host full-length movies."
-      : " Please extract the audio track using a desktop tool and upload the MP3 directly.";
-    throw new ExtractionError(
-      `File is too large for browser-based extraction (${formatBytes(videoFile.size)}). ` +
-        `Maximum supported size is ${formatBytes(maxSize)}.` +
-        deviceHint
-    );
-  }
-
-  if (videoFile.size < MIN_EXTRACTION_SIZE) {
-    throw new ExtractionError(
-      "File is too small to contain video with audio. Please upload a valid video file.",
-      false
-    );
-  }
-
-  // ── Load FFmpeg ──────────────────────────────────────────────
-  const ffmpeg = await getFFmpeg(onProgress);
-
-  // ── Write input file to WASM filesystem ──────────────────────
-  const inputExt = videoFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
-  const inputName = `input.${inputExt}`;
-  const outputName = "output.mp3";
-
-  onProgress?.({
-    phase: "extracting",
-    percent: 0,
-    message: "Reading video file...",
-  });
-
-  try {
-    const fileData = await fetchFile(videoFile);
-    await ffmpeg.writeFile(inputName, fileData);
-  } catch (err) {
-    log("Failed to write input file:", err);
-    throw new ExtractionError(
-      "Not enough memory to process this file. Try a smaller video or use a desktop tool to extract the audio."
-    );
-  }
-
-  // ── Wire progress ───────────────────────────────────────────
-  const progressHandler = ({ progress }: { progress: number; time: number }) => {
-    // ffmpeg reports progress as 0..1 (sometimes > 1 due to estimation)
-    const pct = Math.min(Math.round(progress * 100), 99);
-    onProgress?.({
-      phase: "extracting",
-      percent: pct,
-      message:
-        pct < 10
-          ? "Analyzing video format..."
-          : pct < 90
-            ? "Removing video track to save bandwidth..."
-            : "Finalizing audio...",
-    });
-  };
-  ffmpeg.on("progress", progressHandler);
-
-  // ── Run extraction ──────────────────────────────────────────
-  try {
-    const exitCode = await ffmpeg.exec([
-      "-i",
-      inputName,
-      "-vn",           // strip video
-      "-ar",
-      "44100",         // 44.1kHz sample rate (standard)
-      "-ac",
-      "2",             // stereo
-      "-b:a",
-      "128k",          // 128kbps bitrate (quality/size sweet spot)
-      "-f",
-      "mp3",           // force MP3 container
-      outputName,
-    ]);
-
-    if (exitCode !== 0) {
-      throw new ExtractionError(
-        "Audio extraction failed. The video file may be corrupted or use an unsupported codec."
-      );
-    }
-  } catch (err) {
-    if (err instanceof ExtractionError) throw err;
-    log("ffmpeg exec failed:", err);
-    throw new ExtractionError(
-      "Audio extraction failed unexpectedly. Try a different video file or extract the audio using a desktop tool."
-    );
-  } finally {
-    ffmpeg.off("progress", progressHandler);
-  }
-
-  // ── Read output ─────────────────────────────────────────────
-  let outputData: Uint8Array;
-  try {
-    const data = await ffmpeg.readFile(outputName);
-    // readFile can return string if encoding is specified, but we didn't specify one
-    if (typeof data === "string") {
-      throw new Error("Unexpected string output from readFile");
-    }
-    outputData = data;
-  } catch (err) {
-    log("Failed to read output:", err);
-    throw new ExtractionError(
-      "Failed to read extracted audio. The video may not contain an audio track."
-    );
-  }
-
-  // ── Cleanup WASM filesystem (critical for memory on mobile) ──
-  try {
-    await ffmpeg.deleteFile(inputName);
-  } catch {
-    // Non-fatal: file may already be gone
-  }
-  try {
-    await ffmpeg.deleteFile(outputName);
-  } catch {
-    // Non-fatal
-  }
-
-  const audioBlob = new Blob([outputData], { type: "audio/mpeg" });
-
-  onProgress?.({
-    phase: "done",
-    percent: 100,
-    message: `Audio extracted (${formatBytes(audioBlob.size)})`,
-  });
-
-  log(
-    `Extraction complete: ${formatBytes(videoFile.size)} video → ${formatBytes(audioBlob.size)} audio ` +
-      `(${Math.round((1 - audioBlob.size / videoFile.size) * 100)}% size reduction)`
-  );
-
-  return audioBlob;
-}
-
-/**
- * Terminate the ffmpeg instance and free all WASM memory.
- * Call this if you need to reclaim memory after extraction.
- */
-export function terminateFFmpeg(): void {
-  if (ffmpegInstance) {
-    try {
-      ffmpegInstance.terminate();
-    } catch {
-      // Already terminated
-    }
-    ffmpegInstance = null;
-    loadPromise = null;
-  }
+  if (file.type.startsWith("audio/")) return true;
+  return /\.(mp3|wav|aac|ogg|m4a|flac|wma|opus)$/i.test(file.name);
 }
 
 /** Format bytes to human-readable string */

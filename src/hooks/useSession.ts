@@ -55,6 +55,9 @@ const setHostToken = (sessionCode: string, token: string): void => {
   sessionStorage.setItem(`host_token_${sessionCode}`, token);
 };
 
+// Supabase anon key — required by the Supabase gateway even when verify_jwt=false
+const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+
 // Helper to call session manager edge function
 const callSessionManager = async (
   action: string,
@@ -64,6 +67,8 @@ const callSessionManager = async (
 ): Promise<Response> => {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "apikey": ANON_KEY,
+    "Authorization": `Bearer ${ANON_KEY}`,
   };
   
   if (hostToken) {
@@ -97,6 +102,8 @@ export function useHostSession() {
           method: "DELETE",
           headers: {
             "Content-Type": "application/json",
+            "apikey": ANON_KEY,
+            "Authorization": `Bearer ${ANON_KEY}`,
             "x-host-token": token,
           },
         }
@@ -164,7 +171,54 @@ export function useHostSession() {
     }
   }, [session, hostToken]);
 
-  // Upload audio file via edge function (secure with host token) with real progress tracking
+  // Single XHR upload attempt — returns { url, fileName } or throws on network/server error
+  const attemptUpload = useCallback((
+    file: File,
+    sessionId: string,
+    token: string,
+    onProgress?: (progress: number) => void,
+  ): Promise<{ url: string; fileName: string }> => {
+    return new Promise((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("sessionId", sessionId);
+
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) {
+          onProgress?.((event.loaded / event.total) * 100);
+        }
+      });
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve({ url: response.url, fileName: response.fileName });
+          } catch {
+            reject(new Error("Failed to parse upload response"));
+          }
+        } else {
+          let msg = "Upload failed";
+          try { msg = JSON.parse(xhr.responseText).error || msg; } catch { /* ignore */ }
+          reject(new Error(msg));
+        }
+      });
+
+      xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+      xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
+
+      xhr.open("POST", `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`);
+      xhr.setRequestHeader("apikey", ANON_KEY);
+      xhr.setRequestHeader("Authorization", `Bearer ${ANON_KEY}`);
+      xhr.setRequestHeader("x-host-token", token);
+      xhr.send(formData);
+    });
+  }, []);
+
+  // Upload audio file with retry (3 attempts, exponential backoff for spotty outdoor WiFi)
+  const MAX_UPLOAD_RETRIES = 3;
   const uploadAudio = useCallback(async (
     file: File,
     onProgress?: (progress: number) => void
@@ -175,74 +229,47 @@ export function useHostSession() {
     }
     
     setIsLoading(true);
-    
-    return new Promise((resolve) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("sessionId", session.id);
 
-      const xhr = new XMLHttpRequest();
-      
-      // Track upload progress
-      xhr.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable) {
-          const percentComplete = (event.loaded / event.total) * 100;
-          onProgress?.(percentComplete);
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          // Exponential backoff: 2s, 4s
+          const delay = Math.pow(2, attempt) * 1000;
+          log(`Upload retry ${attempt + 1}/${MAX_UPLOAD_RETRIES} after ${delay}ms`);
+          toast.info(`Upload retry ${attempt + 1}/${MAX_UPLOAD_RETRIES}...`);
+          await new Promise(r => setTimeout(r, delay));
+          onProgress?.(0); // Reset progress for retry
         }
-      });
 
-      xhr.addEventListener("load", async () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const response = JSON.parse(xhr.responseText);
-            const { url, fileName } = response;
+        const { url, fileName } = await attemptUpload(file, session.id, hostToken, onProgress);
 
-            // Update session with audio URL via secure edge function
-            const success = await updateSession({
-              audio_url: url,
-              audio_filename: fileName,
-            });
+        // Update session with audio URL via secure edge function
+        const success = await updateSession({
+          audio_url: url,
+          audio_filename: fileName,
+        });
 
-            if (!success) {
-              toast.error("Failed to update session");
-              resolve(null);
-            } else {
-              toast.success("Audio uploaded successfully!");
-              resolve(url);
-            }
-          } catch {
-            toast.error("Failed to parse upload response");
-            resolve(null);
-          }
-        } else {
-          try {
-            const errorData = JSON.parse(xhr.responseText);
-            toast.error(errorData.error || "Upload failed");
-          } catch {
-            toast.error("Upload failed");
-          }
-          resolve(null);
+        if (!success) {
+          toast.error("Failed to update session");
+          setIsLoading(false);
+          return null;
         }
-        setIsLoading(false);
-      });
 
-      xhr.addEventListener("error", () => {
-        toast.error("Upload failed - network error");
+        toast.success("Audio uploaded successfully!");
         setIsLoading(false);
-        resolve(null);
-      });
+        return url;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        log(`Upload attempt ${attempt + 1} failed:`, lastError.message);
+      }
+    }
 
-      xhr.addEventListener("abort", () => {
-        toast.error("Upload cancelled");
-        setIsLoading(false);
-        resolve(null);
-      });
-
-      xhr.open("POST", `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/storage-upload`);
-      xhr.setRequestHeader("x-host-token", hostToken);
-      xhr.send(formData);
-    });
-  }, [session, hostToken, updateSession]);
+    // All retries exhausted
+    toast.error(lastError?.message || "Upload failed after multiple retries");
+    setIsLoading(false);
+    return null;
+  }, [session, hostToken, updateSession, attemptUpload]);
 
   // Update session with video URL and tracks
   const updateVideoInfo = useCallback(async (
@@ -265,6 +292,14 @@ export function useHostSession() {
     await updateSession({
       selected_audio_track: audioTrack,
       selected_subtitle_track: subtitleTrack,
+    });
+  }, [updateSession]);
+
+  // Update session audio URL (used when server extraction returns a signed URL)
+  const updateAudioUrl = useCallback(async (audioUrl: string, audioFilename: string) => {
+    return updateSession({
+      audio_url: audioUrl,
+      audio_filename: audioFilename,
     });
   }, [updateSession]);
 
@@ -332,14 +367,13 @@ export function useHostSession() {
       // Use sendBeacon for reliable delivery during page unload
       const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=terminate&sessionId=${session.id}`;
       
-      // sendBeacon doesn't support custom headers, so we use fetch with keepalive
-      navigator.sendBeacon(url); // Fallback attempt
-      
       // Primary method: fetch with keepalive (allows headers)
       fetch(url, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
+          "apikey": ANON_KEY,
+          "Authorization": `Bearer ${ANON_KEY}`,
           "x-host-token": hostToken,
         },
         keepalive: true, // Critical for page unload
@@ -364,10 +398,14 @@ export function useHostSession() {
     uploadAudio,
     updatePlaybackState,
     updateVideoInfo,
+    updateAudioUrl,
     updateSelectedTracks,
     terminateSession: session && hostToken ? () => terminateSession(session.id, hostToken) : undefined,
   };
 }
+
+/** Default sync poll interval (ms). 2s is safe for Supabase rate limits. */
+const DEFAULT_SYNC_INTERVAL_MS = 2000;
 
 export function useListenerSession(sessionCode: string) {
   const [session, setSession] = useState<Session | null>(null);
@@ -376,6 +414,7 @@ export function useListenerSession(sessionCode: string) {
   const [error, setError] = useState<string | null>(null);
   const [listenerToken] = useState(() => generateListenerToken());
   const [networkLatencyMs, setNetworkLatencyMs] = useState(0);
+  const [syncIntervalMs, setSyncIntervalMs] = useState(DEFAULT_SYNC_INTERVAL_MS);
   const latencySamplesRef = useRef<number[]>([]);
 
   // Helper to call listener manager edge function
@@ -395,6 +434,8 @@ export function useListenerSession(sessionCode: string) {
       method,
       headers: {
         "Content-Type": "application/json",
+        "apikey": ANON_KEY,
+        "Authorization": `Bearer ${ANON_KEY}`,
         "x-listener-token": listenerToken,
       },
       body: method !== "DELETE" && body ? JSON.stringify(body) : undefined,
@@ -412,7 +453,13 @@ export function useListenerSession(sessionCode: string) {
       // Fetch session via secure edge function
       const joinResponse = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${sessionCode.toUpperCase()}`,
-        { method: "GET" }
+        {
+          method: "GET",
+          headers: {
+            "apikey": ANON_KEY,
+            "Authorization": `Bearer ${ANON_KEY}`,
+          },
+        }
       );
 
       if (!joinResponse.ok) {
@@ -483,7 +530,13 @@ export function useListenerSession(sessionCode: string) {
       try {
         const response = await fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/session-manager?action=join&code=${code}`,
-          { method: "GET" }
+          {
+            method: "GET",
+            headers: {
+              "apikey": ANON_KEY,
+              "Authorization": `Bearer ${ANON_KEY}`,
+            },
+          }
         );
         
         if (response.ok) {
@@ -522,8 +575,8 @@ export function useListenerSession(sessionCode: string) {
     // Initial poll
     pollSession();
 
-    // Poll every 2 seconds for sync updates
-    const pollInterval = setInterval(pollSession, 2000);
+    // Poll at the configured interval (default 2s, can be set to 1s for outdoor)
+    const pollInterval = setInterval(pollSession, syncIntervalMs);
 
     // Ping every 30 seconds to stay connected via edge function
     const pingInterval = setInterval(async () => {
@@ -535,6 +588,8 @@ export function useListenerSession(sessionCode: string) {
             method: "PUT",
             headers: {
               "Content-Type": "application/json",
+              "apikey": ANON_KEY,
+              "Authorization": `Bearer ${ANON_KEY}`,
               "x-listener-token": listenerToken,
             },
             body: JSON.stringify({ sessionId: sid }),
@@ -549,7 +604,7 @@ export function useListenerSession(sessionCode: string) {
       clearInterval(pollInterval);
       clearInterval(pingInterval);
     };
-  }, [isConnected, listenerToken]);
+  }, [isConnected, listenerToken, syncIntervalMs]);
 
   // Cleanup on unmount - use refs to avoid stale closure
   useEffect(() => {
@@ -563,6 +618,8 @@ export function useListenerSession(sessionCode: string) {
             method: "DELETE",
             headers: {
               "Content-Type": "application/json",
+              "apikey": ANON_KEY,
+              "Authorization": `Bearer ${ANON_KEY}`,
               "x-listener-token": listenerToken,
             },
             keepalive: true,
@@ -578,6 +635,8 @@ export function useListenerSession(sessionCode: string) {
     isLoading,
     error,
     networkLatencyMs,
+    syncIntervalMs,
+    setSyncIntervalMs,
     connect,
     disconnect,
   };
