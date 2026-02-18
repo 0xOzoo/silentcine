@@ -94,6 +94,31 @@ Deno.serve(async (req) => {
         );
       }
 
+      // Check listener limit based on host's tier
+      try {
+        const { data: limitData, error: limitError } = await supabaseAdmin
+          .rpc("check_listener_limit", { p_session_id: sessionId });
+
+        if (!limitError && limitData && limitData.length > 0) {
+          const limit = limitData[0];
+          if (!limit.allowed) {
+            console.log(`Session ${sessionId} full: ${limit.current_count}/${limit.max_allowed} (${limit.tier} tier)`);
+            return new Response(
+              JSON.stringify({
+                error: "Room full",
+                currentCount: limit.current_count,
+                maxAllowed: limit.max_allowed,
+                tier: limit.tier,
+              }),
+              { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+        }
+      } catch (limitErr) {
+        // Fail open: if the limit check fails, allow the join
+        console.error("Listener limit check failed (allowing join):", limitErr);
+      }
+
       // Register/update listener
       const { error: upsertError } = await supabaseAdmin
         .from("session_listeners")

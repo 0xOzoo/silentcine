@@ -14,6 +14,7 @@ import {
   terminateFFmpeg,
   isMobileHost,
   getFileSizeLimit,
+  cacheVideoFile,
   ExtractionError,
   type ExtractionProgress,
 } from "@/utils/extractAudio";
@@ -213,12 +214,17 @@ const HostSession = ({ onBack }: HostSessionProps) => {
       const localUrl = URL.createObjectURL(file);
       setVideoUrl(localUrl);
 
+      // Cache video in OPFS for instant replay (non-blocking, fire-and-forget)
+      if (session?.code) {
+        cacheVideoFile(session.code, file).catch(() => {});
+      }
+
       // ── Video file: upload to storage + extract via server ──
       setPipelinePhase("extracting");
       setIsUploading(true);
 
       try {
-        // extractAudioFromVideo now handles: upload to storage, trigger Pi, poll for result
+        // extractAudioFromVideo handles: upload to storage, trigger worker, poll for result
         // Returns a signed URL for the extracted audio
         const signedAudioUrl = await extractAudioFromVideo(file, (progress) => {
           setExtractionProgress(progress);
@@ -669,12 +675,32 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             />
           </div>
 
-          {/* Listener count */}
-          <div className="flex items-center gap-2 text-white/70 mb-4">
-            <Users className="w-4 h-4" />
-            <span className="text-sm">
-              {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
-            </span>
+          {/* Listener count with health indicators */}
+          <div className="flex flex-col items-center gap-1.5 text-white/70 mb-4">
+            <div className="flex items-center gap-2">
+              <Users className="w-4 h-4" />
+              <span className="text-sm font-medium">
+                {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {listeners.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+                {listeners.map((l) => {
+                  const pingAge = Date.now() - new Date(l.last_ping_at).getTime();
+                  const isHealthy = pingAge < 35000;   // pinged within 35s
+                  const isWarning = pingAge >= 35000 && pingAge < 90000;
+                  return (
+                    <span
+                      key={l.id}
+                      className={`w-2.5 h-2.5 rounded-full ${
+                        isHealthy ? 'bg-green-500' : isWarning ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'
+                      }`}
+                      title={`Last ping: ${Math.round(pingAge / 1000)}s ago`}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Audio Status */}
@@ -917,7 +943,42 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                           </div>
                         )}
 
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
+                          {/* Retry with same file */}
+                          {videoFile && isVideoFile(videoFile) && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={async () => {
+                                setPipelinePhase("extracting");
+                                setPipelineError(null);
+                                setShowFallbackHelp(false);
+                                setIsUploading(true);
+                                try {
+                                  const signedAudioUrl = await extractAudioFromVideo(videoFile, (progress) => {
+                                    setExtractionProgress(progress);
+                                  });
+                                  const baseName = videoFile.name.replace(/\.[^.]+$/, "");
+                                  await updateAudioUrl(signedAudioUrl, `${baseName}.mp3`);
+                                  setPipelinePhase("done");
+                                  setIsUploading(false);
+                                  toast.success("Audio extracted and uploaded!");
+                                } catch (err) {
+                                  setPipelinePhase("error");
+                                  setIsUploading(false);
+                                  if (err instanceof ExtractionError) {
+                                    setPipelineError(err.message);
+                                    setShowFallbackHelp(err.showFallback);
+                                  } else {
+                                    setPipelineError("Retry failed unexpectedly.");
+                                    setShowFallbackHelp(true);
+                                  }
+                                }
+                              }}
+                            >
+                              Retry extraction
+                            </Button>
+                          )}
                           <Button
                             variant="outline"
                             size="sm"

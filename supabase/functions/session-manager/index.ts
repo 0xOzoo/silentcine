@@ -441,6 +441,82 @@ Deno.serve(async (req) => {
       );
     }
 
+    // CREATE ANONYMOUS PROFILE - for anonymous users (no auth required)
+    if (req.method === "POST" && action === "create-profile") {
+      const { anonymousId } = await req.json().catch(() => ({ anonymousId: null }));
+
+      if (!anonymousId) {
+        return new Response(
+          JSON.stringify({ error: "anonymousId is required" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Rate limit: 5 profile creations per minute per IP
+      if (!await checkRateLimit(supabaseAdmin, `create-profile:${ip}`, 5, 60)) {
+        return new Response(
+          JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Check if profile already exists
+      const { data: existing } = await supabaseAdmin
+        .from("profiles")
+        .select("*")
+        .eq("anonymous_id", anonymousId)
+        .maybeSingle();
+
+      if (existing) {
+        return new Response(
+          JSON.stringify({ profile: existing }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Create anonymous profile (service_role bypasses RLS)
+      // Use upsert with onConflict to handle race conditions where two
+      // concurrent requests try to create the same profile simultaneously
+      const { data: newProfile, error: insertError } = await supabaseAdmin
+        .from("profiles")
+        .upsert(
+          { anonymous_id: anonymousId, anonymous: true },
+          { onConflict: "anonymous_id", ignoreDuplicates: true }
+        )
+        .select()
+        .single();
+
+      if (insertError) {
+        // If upsert still failed, try one more SELECT (the row may exist from concurrent insert)
+        console.warn("Upsert failed, retrying SELECT:", insertError);
+        const { data: retryProfile } = await supabaseAdmin
+          .from("profiles")
+          .select("*")
+          .eq("anonymous_id", anonymousId)
+          .maybeSingle();
+
+        if (retryProfile) {
+          return new Response(
+            JSON.stringify({ profile: retryProfile }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        console.error("Failed to create anonymous profile:", insertError);
+        return new Response(
+          JSON.stringify({ error: "Failed to create profile" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log(`Anonymous profile created: ${newProfile.id}`);
+
+      return new Response(
+        JSON.stringify({ profile: newProfile }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     return new Response(
       JSON.stringify({ error: "Invalid action" }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }

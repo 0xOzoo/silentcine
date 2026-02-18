@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Play, Volume2, VolumeX, Headphones, ScanLine, AlertCircle } from "lucide-react";
+import { ArrowLeft, Play, Volume2, VolumeX, Headphones, ScanLine, AlertCircle, HardDrive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 import SyncCalibration from "./SyncCalibration";
 import TrackSelector from "./TrackSelector";
 import QRScanner from "./QRScanner";
+import { cacheAudioFromUrl, getCachedAudioUrl, isOpfsSupported } from "@/lib/opfs";
 
 const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
@@ -31,6 +32,8 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [shouldAutoConnect, setShouldAutoConnect] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(!IS_MOBILE);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [cachedAudioUrl, setCachedAudioUrl] = useState<string | null>(null);
+  const [isAudioCached, setIsAudioCached] = useState(false);
   const audioRef = useRef<HTMLVideoElement>(null);
   const lastSyncRef = useRef<string | null>(null);
   const sessionRef = useRef(sessionId || "");
@@ -109,6 +112,58 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     }
   };
 
+  // OPFS cache-first audio: try to serve from cache, otherwise download & cache
+  useEffect(() => {
+    if (!session?.audio_url || !session?.code) return;
+
+    let cancelled = false;
+    const sessionCode = session.code;
+    const remoteUrl = session.audio_url;
+
+    (async () => {
+      // 1. Try OPFS cache first
+      try {
+        const cached = await getCachedAudioUrl(sessionCode);
+        if (cached && !cancelled) {
+          log("Serving audio from OPFS cache");
+          setCachedAudioUrl(cached);
+          setIsAudioCached(true);
+          return;
+        }
+      } catch {
+        // Cache miss — proceed to network
+      }
+
+      // 2. Use remote URL (will be set as src)
+      if (!cancelled) {
+        setCachedAudioUrl(null);
+        setIsAudioCached(false);
+      }
+
+      // 3. Background: cache the audio for next time (non-blocking)
+      if (await isOpfsSupported()) {
+        try {
+          await cacheAudioFromUrl(sessionCode, remoteUrl);
+          log("Audio cached in OPFS for next time");
+        } catch (err) {
+          log("Background OPFS cache failed (non-fatal):", err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      // Revoke blob URL on cleanup
+      if (cachedAudioUrl) {
+        URL.revokeObjectURL(cachedAudioUrl);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.audio_url, session?.code]);
+
+  // Resolve audio source: OPFS cache > remote URL
+  const resolvedAudioUrl = cachedAudioUrl || session?.audio_url || null;
+
   // Handle volume changes
   useEffect(() => {
     if (audioRef.current) {
@@ -131,7 +186,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
 
   // Sync playback with host (with calibration offset and latency compensation)
   useEffect(() => {
-    if (!session || !audioRef.current || !session.audio_url) return;
+    if (!session || !audioRef.current || !resolvedAudioUrl) return;
     // Don't attempt playback until audio is unlocked on mobile
     if (!audioUnlocked) return;
 
@@ -182,7 +237,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
       setLocalIsPlaying(false);
       log('Playback paused via sync');
     }
-  }, [session, syncOffset, audioUnlocked, networkLatencyMs]);
+  }, [session, syncOffset, audioUnlocked, networkLatencyMs, resolvedAudioUrl]);
 
   // Get available tracks from session
   const audioTracks: AudioTrack[] = session?.audio_tracks || [];
@@ -302,7 +357,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
           >
             {/* Mobile Audio Unlock Overlay */}
             <AnimatePresence>
-              {isConnected && !audioUnlocked && session?.audio_url && (
+              {isConnected && !audioUnlocked && resolvedAudioUrl && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -362,10 +417,10 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             </div>
 
             {/* Hidden Video Element for Audio Playback */}
-            {session?.audio_url && (
+            {resolvedAudioUrl && (
               <video
                 ref={audioRef}
-                src={session.audio_url}
+                src={resolvedAudioUrl}
                 preload="auto"
                 playsInline
                 style={{ display: 'none' }}
@@ -373,9 +428,15 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                   const target = e.currentTarget;
                   log('Audio load error:', target.error?.message, 'code:', target.error?.code);
                   setAudioError(`Failed to load audio: ${target.error?.message || 'Unknown error'}`);
+                  // If cached URL failed, fall back to remote
+                  if (isAudioCached && session?.audio_url) {
+                    log('Cached audio failed, falling back to remote URL');
+                    setCachedAudioUrl(null);
+                    setIsAudioCached(false);
+                  }
                 }}
                 onCanPlay={() => {
-                  log('Audio ready to play');
+                  log('Audio ready to play', isAudioCached ? '(from cache)' : '(from network)');
                   setAudioError(null);
                 }}
               />
@@ -418,7 +479,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                       />
                     ))}
                   </div>
-                ) : !session?.audio_url ? (
+                ) : !resolvedAudioUrl ? (
                   <motion.div
                     animate={{ rotate: 360 }}
                     transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
@@ -430,12 +491,12 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               </motion.div>
 
               <p className="text-muted-foreground text-sm">
-                {!session?.audio_url 
+                {!resolvedAudioUrl 
                   ? "Waiting for host to upload video..." 
                   : !audioUnlocked
                     ? "Tap to enable audio..."
                   : localIsPlaying 
-                    ? "Audio streaming..." 
+                    ? isAudioCached ? "Streaming from cache..." : "Audio streaming..." 
                     : session?.is_playing 
                       ? "Syncing with host..." 
                       : "Waiting for host to start playback..."}
@@ -454,7 +515,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             <div className="flex justify-center mb-8">
               <button
                 onClick={toggleMute}
-                disabled={!session?.audio_url || !audioUnlocked}
+                disabled={!resolvedAudioUrl || !audioUnlocked}
                 className="w-20 h-20 rounded-full bg-gradient-to-r from-primary to-glow-secondary flex items-center justify-center shadow-lg shadow-primary/30 hover:shadow-xl hover:shadow-primary/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isMuted ? (
@@ -509,7 +570,7 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
             </div>
 
             {/* Sync Status Indicator */}
-            {audioUnlocked && session?.audio_url && (
+            {audioUnlocked && resolvedAudioUrl && (
               <div className="flex flex-col items-center gap-2 mb-4 text-xs text-muted-foreground">
                 <div className="flex items-center gap-3">
                   <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full ${
@@ -524,6 +585,12 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                     }`} />
                     {networkLatencyMs}ms
                   </span>
+                  {isAudioCached && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-500/10 text-blue-500">
+                      <HardDrive className="w-3 h-3" />
+                      Cached
+                    </span>
+                  )}
                   {syncOffset !== 0 && (
                     <span className="text-muted-foreground/70">
                       offset: {syncOffset > 0 ? '+' : ''}{syncOffset}ms

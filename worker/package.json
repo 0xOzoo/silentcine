@@ -1,0 +1,19 @@
+{
+  "name": "silentcine-worker",
+  "version": "1.0.0",
+  "description": "SilentCine audio extraction worker — runs locally with ffmpeg",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.96.0",
+    "dotenv": "^16.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

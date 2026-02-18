@@ -19,7 +19,7 @@ Outdoor movies, personal sound. A web app that lets a host project a movie on a 
 | Backend | Supabase Edge Functions (Deno serverless) |
 | Database | Supabase (PostgreSQL) |
 | File Storage | Supabase Storage (signed URLs) |
-| Audio Extraction | External worker server running native ffmpeg |
+| Audio Extraction | Local worker server running native ffmpeg |
 | Real-time Sync | HTTP polling (2s default, 1s outdoor mode) |
 | Audio Playback | HTML `<video>` element on listener devices |
 
@@ -30,16 +30,22 @@ src/
   components/       # HostSession, ListenerView, PiPQRCode, QRScanner, SyncCalibration, TrackSelector
   hooks/            # useSession (host + listener), use-toast, use-mobile
   integrations/     # Supabase client + generated types
-  pages/            # Index, Listen, NotFound
+  lib/              # OPFS caching, resumable upload (TUS)
+  pages/            # Index, Listen, Login, Signup, legal pages
   utils/            # extractAudio (server extraction pipeline)
+  contexts/         # AuthContext (Supabase Auth + anonymous bridge)
+  types/            # Profile, EventPass, tier types
   test/             # Vitest setup + tests
+
+worker/
+  src/index.js      # Audio extraction worker (Express + ffmpeg)
 
 supabase/
   functions/
     session-manager/   # Session CRUD, host auth, cleanup
     storage-upload/    # File upload with host token auth
     listener-manager/  # Listener join/ping/leave
-  migrations/          # 15 SQL migrations (tables, RLS, rate limiting)
+  migrations/          # 16 SQL migrations (tables, RLS, rate limiting, profiles)
 
 public/
   manifest.json     # PWA manifest
@@ -73,7 +79,7 @@ All functions have `verify_jwt = false` — auth is handled via custom tokens, n
 
 1. Browser uploads video to Supabase Storage (`movies` bucket)
 2. Record inserted into `movies` table with status `uploaded`
-3. Frontend POSTs `{ movieId, videoPath }` to extraction server at `VITE_PI_WORKER_URL`
+3. Frontend POSTs `{ movieId, videoPath }` to extraction worker at `VITE_WORKER_URL`
 4. Server downloads video, runs ffmpeg, uploads MP3 back to storage, updates `movies.status` to `ready`
 5. Frontend polls `movies` table every 3s (10 min timeout)
 6. On `ready`, frontend gets a signed URL for the audio and updates the session
@@ -84,7 +90,7 @@ All functions have `verify_jwt = false` — auth is handled via custom tokens, n
 
 - Node.js 18+
 - Supabase project with edge functions deployed
-- Extraction server running ffmpeg (any machine on your LAN)
+- ffmpeg installed locally (the extraction worker runs on the same machine)
 
 ### Environment Variables
 
@@ -94,7 +100,7 @@ Create `.env.local`:
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 VITE_SUPABASE_PROJECT_ID=your-project-id
-VITE_PI_WORKER_URL=http://your-server-ip:3001
+VITE_WORKER_URL=http://localhost:3001
 VITE_WORKER_SECRET=your-shared-secret
 ```
 
@@ -102,7 +108,16 @@ VITE_WORKER_SECRET=your-shared-secret
 
 ```sh
 npm install
-npm run dev        # Dev server on http://localhost:8080
+
+# Start the extraction worker (separate terminal)
+cd worker
+cp .env.example .env   # Fill in SUPABASE_SERVICE_ROLE_KEY
+npm install
+npm start              # Worker on http://localhost:3001
+
+# Start the frontend dev server
+cd ..
+npm run dev            # Dev server on http://localhost:8080
 ```
 
 ### Deploy Edge Functions
@@ -150,7 +165,7 @@ npx supabase db push --project-ref <your-project-id>
 
 ## Extraction Server Contract
 
-The frontend expects a server at `VITE_PI_WORKER_URL` implementing:
+The frontend expects a worker at `VITE_WORKER_URL` (default `http://localhost:3001`) implementing:
 
 ```
 POST /extract

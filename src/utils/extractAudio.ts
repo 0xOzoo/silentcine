@@ -1,4 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
+import { cacheVideo, cacheAudioFromUrl, getCachedAudioUrl, getCacheEntry } from "@/lib/opfs";
+import { resumableUpload } from "@/lib/resumableUpload";
 
 const DEBUG = import.meta.env.DEV;
 const log = (...args: unknown[]) => {
@@ -101,10 +103,10 @@ export async function extractAudioFromVideo(
     );
   }
 
-  const piUrl = import.meta.env.VITE_PI_WORKER_URL;
-  if (!piUrl) {
+  const workerUrl = import.meta.env.VITE_WORKER_URL;
+  if (!workerUrl) {
     throw new ExtractionError(
-      "Server worker URL not configured. Set VITE_PI_WORKER_URL in .env.",
+      "Extraction worker URL not configured. Set VITE_WORKER_URL in .env.",
       false,
     );
   }
@@ -115,25 +117,27 @@ export async function extractAudioFromVideo(
   };
 
   try {
-    // ── 1. Upload video to Supabase Storage ─────────────────────
+    // ── 1. Upload video to Supabase Storage (resumable for large files) ──
     emit("uploading", 0, "Uploading video to storage...");
 
     const fileExt = videoFile.name.split(".").pop()?.toLowerCase() ?? "mp4";
     const fileName = `${Date.now()}.${fileExt}`;
     const videoPath = `videos/${fileName}`;
 
-    const { error: storageError } = await supabase.storage
-      .from("movies")
-      .upload(videoPath, videoFile, {
-        cacheControl: "3600",
-        upsert: false,
+    try {
+      await resumableUpload({
+        bucket: "movies",
+        path: videoPath,
+        file: videoFile,
+        onProgress: (p) => {
+          // Map upload progress to 0-50% of the "uploading" phase
+          emit("uploading", Math.round(p.percent * 0.5), `Uploading video... ${p.percent}%`);
+        },
       });
-
-    if (storageError) {
-      log("Storage upload failed:", storageError);
-      throw new ExtractionError(
-        `Failed to upload video: ${storageError.message}`,
-      );
+    } catch (uploadErr) {
+      const msg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+      log("Storage upload failed:", msg);
+      throw new ExtractionError(`Failed to upload video: ${msg}`);
     }
 
     emit("uploading", 50, "Video uploaded, creating record...");
@@ -160,32 +164,55 @@ export async function extractAudioFromVideo(
     const movieId = (movie as MovieRecord).id;
     emit("uploading", 80, "Sending to server for extraction...");
 
-    // ── 3. Trigger server extraction ──────────────────────────
-    let piResponse: Response;
-    try {
-      piResponse = await fetch(`${piUrl}/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          movieId,
-          videoPath,
-        }),
-      });
-    } catch (err) {
-      log("Pi worker network error:", err);
-      throw new ExtractionError(
-        "Cannot reach extraction server. Make sure it's running and accessible on your network.",
-        true,
-      );
-    }
+    // ── 3. Trigger extraction worker (with retry) ─────────────
+    const workerSecret = import.meta.env.VITE_WORKER_SECRET;
+    log("Worker config:", { url: workerUrl, hasSecret: !!workerSecret, secretLen: workerSecret?.length });
+    const WORKER_MAX_RETRIES = 3;
+    const WORKER_RETRY_DELAY_MS = 3000;
+    let workerResponse: Response | null = null;
 
-    if (!piResponse.ok) {
-      const errText = await piResponse.text().catch(() => "Unknown error");
-      log("Pi worker error:", piResponse.status, errText);
-      throw new ExtractionError(
-        `Server extraction error: ${errText}`,
-        true,
-      );
+    for (let attempt = 1; attempt <= WORKER_MAX_RETRIES; attempt++) {
+      try {
+        workerResponse = await fetch(`${workerUrl}/extract`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(workerSecret ? { "x-api-key": workerSecret } : {}),
+          },
+          body: JSON.stringify({
+            movieId,
+            videoPath,
+          }),
+        });
+
+        if (workerResponse.ok) break;
+
+        const errText = await workerResponse.text().catch(() => "Unknown error");
+        log(`Worker error (attempt ${attempt}/${WORKER_MAX_RETRIES}):`, workerResponse.status, errText);
+
+        if (attempt === WORKER_MAX_RETRIES) {
+          throw new ExtractionError(
+            `Server extraction error after ${WORKER_MAX_RETRIES} attempts: ${errText}`,
+            true,
+          );
+        }
+      } catch (err) {
+        if (err instanceof ExtractionError) throw err;
+
+        log(`Worker network error (attempt ${attempt}/${WORKER_MAX_RETRIES}):`, err);
+
+        if (attempt === WORKER_MAX_RETRIES) {
+          throw new ExtractionError(
+            "Cannot reach extraction worker. Make sure it's running (npm start in worker/).",
+            true,
+          );
+        }
+      }
+
+      // Wait before retry (exponential backoff)
+      const delay = WORKER_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+      emit("uploading", 80, `Worker unreachable, retrying in ${Math.round(delay / 1000)}s...`);
+      await new Promise((r) => setTimeout(r, delay));
     }
 
     emit("processing", 0, "Server is extracting audio...");
@@ -195,6 +222,16 @@ export async function extractAudioFromVideo(
 
     emit("done", 100, "Audio extraction complete!");
     log("Extraction complete, audio URL:", audioUrl);
+
+    // Cache extracted audio in OPFS for offline/instant replay
+    // Use movieId as session code for cache key (unique per extraction)
+    try {
+      await cacheAudioFromUrl(movieId, audioUrl);
+      log("Audio cached in OPFS for movieId:", movieId);
+    } catch (cacheErr) {
+      // Non-fatal: caching failure shouldn't block playback
+      log("OPFS audio cache failed (non-fatal):", cacheErr);
+    }
 
     return audioUrl;
   } catch (error) {
@@ -286,6 +323,47 @@ async function pollForResult(
  */
 export function terminateFFmpeg(): void {
   // No-op: nothing to terminate
+}
+
+/**
+ * Cache the host's video file in OPFS for instant replay.
+ * Non-blocking — failures are silently logged.
+ *
+ * @param sessionCode - Session code or movieId to key the cache
+ * @param videoFile - The video File to cache
+ */
+export async function cacheVideoFile(
+  sessionCode: string,
+  videoFile: File,
+): Promise<void> {
+  try {
+    await cacheVideo(sessionCode, videoFile);
+    log("Video cached in OPFS for session:", sessionCode);
+  } catch (err) {
+    log("OPFS video cache failed (non-fatal):", err);
+  }
+}
+
+/**
+ * Try to get a cached audio URL from OPFS before hitting the network.
+ * Returns null if not cached or OPFS unavailable.
+ *
+ * @param sessionCode - Session code or movieId to look up
+ */
+export async function getCachedAudio(sessionCode: string): Promise<string | null> {
+  try {
+    const entry = await getCacheEntry(sessionCode);
+    if (entry?.hasAudio) {
+      const url = await getCachedAudioUrl(sessionCode);
+      if (url) {
+        log("Serving audio from OPFS cache for:", sessionCode);
+        return url;
+      }
+    }
+  } catch (err) {
+    log("OPFS cache lookup failed (non-fatal):", err);
+  }
+  return null;
 }
 
 /**
