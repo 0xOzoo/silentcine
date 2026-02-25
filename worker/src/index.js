@@ -7,16 +7,18 @@
  * back, and updates the movies table.
  *
  * Endpoints:
- *   POST /extract      — Extract audio from a video
- *   POST /transcode    — Generate multi-quality video variants (720p/1080p/4K)
- *   GET  /status/:id   — Check job status for a movie
- *   GET  /health       — Health check
+ *   POST /extract           — Extract audio + subtitles from a video
+ *   POST /transcode         — Generate multi-quality video variants (720p/1080p/4K)
+ *   POST /upload-subtitle   — Upload external SRT file, convert to VTT
+ *   GET  /status/:id        — Check job status for a movie
+ *   GET  /health            — Health check
  */
 
-require("dotenv").config();
+require("dotenv").config({ path: require("path").resolve(__dirname, "..", ".env") });
 
 const express = require("express");
 const cors = require("cors");
+const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 const { spawn } = require("child_process");
 const fs = require("fs");
@@ -66,7 +68,20 @@ fs.mkdirSync(TMP_DIR, { recursive: true });
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "5mb" }));
+
+// Multer config for SRT file uploads (max 2MB — subtitles are small text files)
+const upload = multer({
+  dest: TMP_DIR,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (/\.(srt|vtt|ass|ssa|sub)$/i.test(file.originalname)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only subtitle files (SRT, VTT, ASS, SSA, SUB) are accepted"));
+    }
+  },
+});
 
 // ── Auth middleware ─────────────────────────────────────────────────
 
@@ -237,12 +252,12 @@ async function runExtraction(movieId, videoPath) {
   await updateMovieStatus(movieId, "processing");
 
   const videoTmpPath = path.join(TMP_DIR, `${movieId}_video_${jobId}`);
-  const audioTmpPath = path.join(TMP_DIR, `${movieId}_audio_${jobId}.mp3`);
+  const tmpFiles = [videoTmpPath]; // track all tmp files for cleanup
 
   try {
     // 1. Download video from Supabase Storage
     console.log(`${logPrefix} Downloading video from storage...`);
-    activeJobs.set(movieId, { status: "downloading", progress: 10 });
+    activeJobs.set(movieId, { status: "downloading", progress: 5 });
 
     const { data: downloadData, error: downloadError } = await supabase.storage
       .from(STORAGE_BUCKET)
@@ -257,49 +272,156 @@ async function runExtraction(movieId, videoPath) {
     fs.writeFileSync(videoTmpPath, buffer);
     console.log(`${logPrefix} Downloaded ${formatBytes(buffer.length)} to ${videoTmpPath}`);
 
-    // 2. Probe the file for audio streams
-    console.log(`${logPrefix} Probing file for audio streams...`);
+    // 2. Probe the file for audio + subtitle streams
+    console.log(`${logPrefix} Probing file for streams...`);
+    activeJobs.set(movieId, { status: "probing", progress: 10 });
     const probeResult = await probeFile(videoTmpPath);
-    console.log(`${logPrefix} Probe result:`, JSON.stringify(probeResult));
+    console.log(`${logPrefix} Found: ${probeResult.audioStreams} audio, ${probeResult.subtitleStreams} subtitle streams`);
 
     if (probeResult.audioStreams === 0) {
       throw new Error("Video file contains no audio streams");
     }
 
-    // 3. Extract audio with ffmpeg
-    console.log(`${logPrefix} Extracting audio with ffmpeg...`);
-    activeJobs.set(movieId, { status: "extracting", progress: 30 });
+    // ── 3. Extract all audio tracks ─────────────────────────────
+    // Allocate 10-60% progress for audio extraction
+    const audioTrackResults = [];
+    const totalAudioTracks = probeResult.audioTracks.length;
 
-    await extractAudioWithFfmpeg(videoTmpPath, audioTmpPath, probeResult.duration, (progress) => {
-      activeJobs.set(movieId, { status: "extracting", progress: 30 + Math.floor(progress * 0.5) });
-    });
+    for (let i = 0; i < totalAudioTracks; i++) {
+      const track = probeResult.audioTracks[i];
+      const audioTmpPath = path.join(TMP_DIR, `${movieId}_audio_${i}_${jobId}.mp3`);
+      tmpFiles.push(audioTmpPath);
 
-    // 4. Upload extracted audio to Supabase Storage
-    console.log(`${logPrefix} Uploading extracted audio...`);
-    activeJobs.set(movieId, { status: "uploading", progress: 85 });
+      const trackLabel = track.language || track.title || `Track ${i}`;
+      console.log(`${logPrefix} Extracting audio track ${i} (${trackLabel})...`);
 
-    const audioBuffer = fs.readFileSync(audioTmpPath);
-    const audioPath = `audio/${movieId}.mp3`;
-
-    const { error: uploadError } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .upload(audioPath, audioBuffer, {
-        contentType: "audio/mpeg",
-        cacheControl: "3600",
-        upsert: true,
+      const baseProgress = 10 + (i / totalAudioTracks) * 50;
+      activeJobs.set(movieId, {
+        status: "extracting_audio",
+        progress: Math.round(baseProgress),
+        currentTrack: `Audio ${i + 1}/${totalAudioTracks}`,
       });
 
-    if (uploadError) {
-      throw new Error(`Failed to upload audio: ${uploadError.message}`);
+      await extractAudioTrack(videoTmpPath, audioTmpPath, track.streamIndex, probeResult.duration, (pct) => {
+        const progress = baseProgress + (pct / 100) * (50 / totalAudioTracks);
+        activeJobs.set(movieId, {
+          status: "extracting_audio",
+          progress: Math.round(progress),
+          currentTrack: `Audio ${i + 1}/${totalAudioTracks}`,
+        });
+      });
+
+      // Upload this audio track
+      const audioBuffer = fs.readFileSync(audioTmpPath);
+      const audioStoragePath = totalAudioTracks === 1
+        ? `audio/${movieId}.mp3`
+        : `audio/${movieId}_track${i}.mp3`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(audioStoragePath, audioBuffer, {
+          contentType: "audio/mpeg",
+          cacheControl: "3600",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        console.error(`${logPrefix} Failed to upload audio track ${i}:`, uploadError.message);
+        continue; // Skip this track but continue with others
+      }
+
+      console.log(`${logPrefix} Audio track ${i} uploaded: ${audioStoragePath} (${formatBytes(audioBuffer.length)})`);
+      audioTrackResults.push({
+        ...track,
+        storagePath: audioStoragePath,
+        label: track.title || (track.language ? `${track.language.toUpperCase()}` : `Audio ${i + 1}`),
+      });
+
+      // Cleanup tmp immediately
+      cleanupFile(audioTmpPath);
     }
 
-    console.log(`${logPrefix} Audio uploaded to ${audioPath} (${formatBytes(audioBuffer.length)})`);
+    // The "primary" audio path is track 0 for backward compatibility
+    const primaryAudioPath = audioTrackResults[0]?.storagePath || `audio/${movieId}.mp3`;
 
-    // 5. Update movies table with success
+    // ── 4. Extract embedded subtitles ───────────────────────────
+    // Allocate 60-85% progress for subtitle extraction
+    const subtitleTrackResults = [];
+    const textSubtitles = probeResult.subtitleTracks.filter((s) => !s.isImageBased);
+
+    if (textSubtitles.length > 0) {
+      console.log(`${logPrefix} Extracting ${textSubtitles.length} text subtitle tracks...`);
+
+      for (let i = 0; i < textSubtitles.length; i++) {
+        const subTrack = textSubtitles[i];
+        const vttTmpPath = path.join(TMP_DIR, `${movieId}_sub_${i}_${jobId}.vtt`);
+        tmpFiles.push(vttTmpPath);
+
+        const trackLabel = subTrack.language || subTrack.title || `Subtitle ${i}`;
+        console.log(`${logPrefix} Extracting subtitle track ${i} (${trackLabel}, codec: ${subTrack.codec})...`);
+
+        activeJobs.set(movieId, {
+          status: "extracting_subtitles",
+          progress: 60 + Math.round((i / textSubtitles.length) * 25),
+          currentTrack: `Subtitle ${i + 1}/${textSubtitles.length}`,
+        });
+
+        try {
+          await extractSubtitleTrack(videoTmpPath, vttTmpPath, subTrack.streamIndex);
+
+          // Read VTT content and upload
+          const vttContent = fs.readFileSync(vttTmpPath, "utf-8");
+          if (vttContent.trim().length < 10) {
+            console.log(`${logPrefix} Subtitle track ${i} is empty, skipping`);
+            continue;
+          }
+
+          const subStoragePath = `subtitles/${movieId}_track${i}.vtt`;
+
+          const { error: subUploadError } = await supabase.storage
+            .from(STORAGE_BUCKET)
+            .upload(subStoragePath, vttContent, {
+              contentType: "text/vtt",
+              cacheControl: "3600",
+              upsert: true,
+            });
+
+          if (subUploadError) {
+            console.error(`${logPrefix} Failed to upload subtitle track ${i}:`, subUploadError.message);
+            continue;
+          }
+
+          console.log(`${logPrefix} Subtitle track ${i} uploaded: ${subStoragePath}`);
+          subtitleTrackResults.push({
+            ...subTrack,
+            storagePath: subStoragePath,
+            format: "vtt",
+            label: subTrack.title || (subTrack.language ? `${subTrack.language.toUpperCase()}` : `Subtitle ${i + 1}`),
+          });
+        } catch (subErr) {
+          console.error(`${logPrefix} Failed to extract subtitle track ${i}:`, subErr.message);
+          // Non-fatal — continue with other tracks
+        }
+
+        cleanupFile(vttTmpPath);
+      }
+    }
+
+    // Log image-based subtitle warning
+    const imageSubtitles = probeResult.subtitleTracks.filter((s) => s.isImageBased);
+    if (imageSubtitles.length > 0) {
+      console.log(`${logPrefix} Skipping ${imageSubtitles.length} image-based subtitle tracks (PGS/VobSub — not supported for text extraction)`);
+    }
+
+    // ── 5. Update movies table with all results ─────────────────
     activeJobs.set(movieId, { status: "ready", progress: 100 });
-    await updateMovieStatus(movieId, "ready", audioPath, null, probeResult);
+    await updateMovieStatus(movieId, "ready", primaryAudioPath, null, {
+      ...probeResult,
+      audioTracks: audioTrackResults,
+      subtitleTracks: subtitleTrackResults,
+    });
 
-    console.log(`${logPrefix} Extraction complete!`);
+    console.log(`${logPrefix} Extraction complete! ${audioTrackResults.length} audio, ${subtitleTrackResults.length} subtitle tracks`);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`${logPrefix} Extraction failed:`, errorMsg);
@@ -307,9 +429,8 @@ async function runExtraction(movieId, videoPath) {
     activeJobs.set(movieId, { status: "error", progress: 0, error: errorMsg });
     await updateMovieStatus(movieId, "error", null, errorMsg);
   } finally {
-    // Cleanup tmp files
-    cleanupFile(videoTmpPath);
-    cleanupFile(audioTmpPath);
+    // Cleanup all tmp files
+    tmpFiles.forEach(cleanupFile);
 
     // Remove from active jobs after 5 minutes (allow status polling)
     setTimeout(() => {
@@ -321,8 +442,15 @@ async function runExtraction(movieId, videoPath) {
 // ── ffprobe ─────────────────────────────────────────────────────────
 
 /**
- * Probe a file for audio stream count, duration, and codec info.
- * @returns {{ audioStreams: number, duration: number, audioCodec: string|null, audioTracks: object[] }}
+ * Probe a file for audio streams, subtitle streams, duration, and codec info.
+ * @returns {{
+ *   audioStreams: number,
+ *   subtitleStreams: number,
+ *   duration: number,
+ *   audioCodec: string|null,
+ *   audioTracks: object[],
+ *   subtitleTracks: object[]
+ * }}
  */
 function probeFile(filePath) {
   return new Promise((resolve, reject) => {
@@ -348,10 +476,14 @@ function probeFile(filePath) {
 
       try {
         const info = JSON.parse(stdout);
-        const audioStreams = (info.streams || []).filter((s) => s.codec_type === "audio");
+        const allStreams = info.streams || [];
+        const audioStreams = allStreams.filter((s) => s.codec_type === "audio");
+        const subtitleStreams = allStreams.filter((s) => s.codec_type === "subtitle");
         const duration = parseFloat(info.format?.duration || "0");
+
         const audioTracks = audioStreams.map((s, i) => ({
           index: i,
+          streamIndex: s.index,  // absolute stream index in the file
           codec: s.codec_name,
           channels: s.channels,
           sampleRate: parseInt(s.sample_rate || "0", 10),
@@ -359,11 +491,22 @@ function probeFile(filePath) {
           title: s.tags?.title || null,
         }));
 
+        const subtitleTracks = subtitleStreams.map((s, i) => ({
+          index: i,
+          streamIndex: s.index,  // absolute stream index in the file
+          codec: s.codec_name,   // subrip, ass, mov_text, webvtt, dvd_subtitle, hdmv_pgs_subtitle, etc.
+          language: s.tags?.language || null,
+          title: s.tags?.title || null,
+          isImageBased: ["dvd_subtitle", "hdmv_pgs_subtitle", "dvb_subtitle"].includes(s.codec_name),
+        }));
+
         resolve({
           audioStreams: audioStreams.length,
+          subtitleStreams: subtitleStreams.length,
           duration,
           audioCodec: audioStreams[0]?.codec_name || null,
           audioTracks,
+          subtitleTracks,
         });
       } catch (e) {
         reject(new Error(`Failed to parse ffprobe output: ${e.message}`));
@@ -379,20 +522,28 @@ function probeFile(filePath) {
 // ── ffmpeg extraction ───────────────────────────────────────────────
 
 /**
- * Extract audio from video using ffmpeg.
+ * Extract a specific audio track from video using ffmpeg.
+ * Maps from the absolute stream index to get the right track.
  * Converts to MP3 192kbps stereo for maximum device compatibility.
+ *
+ * @param {string} inputPath - Path to the video file
+ * @param {string} outputPath - Path for the output MP3
+ * @param {number} streamIndex - Absolute stream index from ffprobe (e.g., 1, 2)
+ * @param {number} duration - Duration in seconds (for progress)
+ * @param {function} onProgress - Progress callback (0-100)
  */
-function extractAudioWithFfmpeg(inputPath, outputPath, duration, onProgress) {
+function extractAudioTrack(inputPath, outputPath, streamIndex, duration, onProgress) {
   return new Promise((resolve, reject) => {
     const args = [
       "-i", inputPath,
-      "-vn",                     // No video
-      "-acodec", "libmp3lame",   // MP3 codec
-      "-ab", "192k",             // 192kbps bitrate
-      "-ar", "44100",            // 44.1kHz sample rate
-      "-ac", "2",                // Stereo
-      "-y",                      // Overwrite output
-      "-progress", "pipe:1",     // Progress to stdout
+      "-map", `0:${streamIndex}`,  // Select specific stream
+      "-vn",                       // No video
+      "-acodec", "libmp3lame",     // MP3 codec
+      "-ab", "192k",               // 192kbps bitrate
+      "-ar", "44100",              // 44.1kHz sample rate
+      "-ac", "2",                  // Stereo
+      "-y",                        // Overwrite output
+      "-progress", "pipe:1",       // Progress to stdout
       outputPath,
     ];
 
@@ -401,7 +552,6 @@ function extractAudioWithFfmpeg(inputPath, outputPath, duration, onProgress) {
 
     proc.stdout.on("data", (data) => {
       const output = data.toString();
-      // Parse progress: "out_time_ms=12345678\n"
       const match = output.match(/out_time_ms=(\d+)/);
       if (match && duration > 0) {
         const currentSec = parseInt(match[1], 10) / 1_000_000;
@@ -414,17 +564,16 @@ function extractAudioWithFfmpeg(inputPath, outputPath, duration, onProgress) {
 
     proc.on("close", (code) => {
       if (code !== 0) {
-        return reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+        return reject(new Error(`ffmpeg audio extraction exited with code ${code}: ${stderr.slice(-500)}`));
       }
 
-      // Verify output file exists and has content
       if (!fs.existsSync(outputPath)) {
         return reject(new Error("ffmpeg completed but output file was not created"));
       }
 
       const stat = fs.statSync(outputPath);
       if (stat.size < 1024) {
-        return reject(new Error("Extracted audio is suspiciously small (< 1KB). The video may have no usable audio."));
+        return reject(new Error("Extracted audio is suspiciously small (< 1KB). The stream may have no usable audio."));
       }
 
       resolve();
@@ -434,6 +583,79 @@ function extractAudioWithFfmpeg(inputPath, outputPath, duration, onProgress) {
       reject(new Error(`ffmpeg not found or failed to start: ${err.message}`));
     });
   });
+}
+
+/**
+ * Extract a specific subtitle track from video and convert to WebVTT.
+ * ffmpeg can convert most text-based subtitle formats (SRT, ASS, MOV_TEXT) to WebVTT directly.
+ *
+ * @param {string} inputPath - Path to the video file
+ * @param {string} outputPath - Path for the output VTT file
+ * @param {number} streamIndex - Absolute stream index from ffprobe
+ */
+function extractSubtitleTrack(inputPath, outputPath, streamIndex) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-i", inputPath,
+      "-map", `0:${streamIndex}`,  // Select specific subtitle stream
+      "-c:s", "webvtt",            // Convert to WebVTT
+      "-y",
+      outputPath,
+    ];
+
+    const proc = spawn("ffmpeg", args);
+    let stderr = "";
+
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        return reject(new Error(`ffmpeg subtitle extraction exited with code ${code}: ${stderr.slice(-500)}`));
+      }
+
+      if (!fs.existsSync(outputPath)) {
+        return reject(new Error("ffmpeg completed but subtitle output file was not created"));
+      }
+
+      resolve();
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error(`ffmpeg not found or failed to start: ${err.message}`));
+    });
+  });
+}
+
+// ── SRT → VTT conversion ────────────────────────────────────────────
+
+/**
+ * Convert an SRT file to WebVTT format.
+ * SRT and VTT are very similar — mainly the header and timestamp separator differ.
+ *
+ * @param {string} srtContent - Raw SRT file content
+ * @returns {string} WebVTT content
+ */
+function srtToVtt(srtContent) {
+  // Normalize line endings
+  let content = srtContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+
+  // Remove BOM if present
+  if (content.charCodeAt(0) === 0xFEFF) {
+    content = content.slice(1);
+  }
+
+  // Replace SRT timestamp format (comma) with VTT format (period)
+  // SRT: 00:01:23,456 --> 00:01:25,789
+  // VTT: 00:01:23.456 --> 00:01:25.789
+  content = content.replace(
+    /(\d{2}:\d{2}:\d{2}),(\d{3})/g,
+    "$1.$2"
+  );
+
+  // Remove sequence numbers (lines that are just digits before a timestamp)
+  content = content.replace(/^\d+\s*\n(?=\d{2}:\d{2}:\d{2})/gm, "");
+
+  return `WEBVTT\n\n${content}\n`;
 }
 
 // ── Transcode pipeline ──────────────────────────────────────────────
@@ -669,6 +891,9 @@ async function updateMovieStatus(movieId, status, audioPath = null, error = null
     if (probeResult.audioTracks) {
       update.audio_tracks = probeResult.audioTracks;
     }
+    if (probeResult.subtitleTracks) {
+      update.subtitle_tracks = probeResult.subtitleTracks;
+    }
   }
 
   const { error: dbError } = await supabase
@@ -680,6 +905,148 @@ async function updateMovieStatus(movieId, status, audioPath = null, error = null
     console.error(`[DB] Failed to update movie ${movieId}:`, dbError.message);
   }
 }
+
+// ── POST /upload-subtitle ────────────────────────────────────────────
+
+app.post("/upload-subtitle", requireApiKey, upload.single("file"), async (req, res) => {
+  try {
+    const { movieId, language, label } = req.body;
+    const file = req.file;
+
+    if (!movieId) {
+      return res.status(400).json({ error: "movieId is required" });
+    }
+    if (!file) {
+      return res.status(400).json({ error: "No subtitle file provided" });
+    }
+
+    const logPrefix = `[Subtitle:${movieId}]`;
+    console.log(`${logPrefix} Received external subtitle: ${file.originalname} (${formatBytes(file.size)})`);
+
+    // Read the uploaded file
+    let content = fs.readFileSync(file.path, "utf-8");
+
+    // Detect format and convert to VTT if needed
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === ".srt") {
+      console.log(`${logPrefix} Converting SRT → VTT`);
+      content = srtToVtt(content);
+    } else if (ext === ".vtt") {
+      // Already VTT, ensure it has the WEBVTT header
+      if (!content.trim().startsWith("WEBVTT")) {
+        content = `WEBVTT\n\n${content}`;
+      }
+    } else if (ext === ".ass" || ext === ".ssa") {
+      // Use ffmpeg to convert ASS/SSA → VTT
+      console.log(`${logPrefix} Converting ${ext.toUpperCase()} → VTT via ffmpeg`);
+      const vttTmpPath = file.path + ".vtt";
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = spawn("ffmpeg", [
+            "-i", file.path,
+            "-c:s", "webvtt",
+            "-y",
+            vttTmpPath,
+          ]);
+          let stderr = "";
+          proc.stderr.on("data", (d) => { stderr += d.toString(); });
+          proc.on("close", (code) => {
+            if (code !== 0) reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-300)}`));
+            else resolve();
+          });
+          proc.on("error", (err) => reject(err));
+        });
+        content = fs.readFileSync(vttTmpPath, "utf-8");
+        cleanupFile(vttTmpPath);
+      } catch (convErr) {
+        cleanupFile(vttTmpPath);
+        throw new Error(`Failed to convert ${ext}: ${convErr.message}`);
+      }
+    } else {
+      cleanupFile(file.path);
+      return res.status(400).json({ error: `Unsupported subtitle format: ${ext}` });
+    }
+
+    // Generate a unique index for this external subtitle
+    // Fetch current movie to see existing subtitle tracks
+    const { data: movie, error: fetchErr } = await supabase
+      .from("movies")
+      .select("subtitle_tracks")
+      .eq("id", movieId)
+      .single();
+
+    if (fetchErr) {
+      throw new Error(`Movie not found: ${fetchErr.message}`);
+    }
+
+    const existingTracks = movie.subtitle_tracks || [];
+    const newIndex = existingTracks.length;
+
+    // Upload VTT to Supabase Storage
+    const subStoragePath = `subtitles/${movieId}_ext${newIndex}.vtt`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(subStoragePath, content, {
+        contentType: "text/vtt",
+        cacheControl: "3600",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      throw new Error(`Failed to upload subtitle: ${uploadError.message}`);
+    }
+
+    // Add to the movie's subtitle_tracks array
+    const baseName = path.basename(file.originalname, ext);
+    const newTrack = {
+      index: newIndex,
+      streamIndex: -1, // external, not from a container stream
+      codec: "webvtt",
+      language: language || null,
+      title: label || baseName || null,
+      isImageBased: false,
+      storagePath: subStoragePath,
+      format: "vtt",
+      label: label || baseName || `External ${newIndex + 1}`,
+      external: true,
+    };
+
+    existingTracks.push(newTrack);
+
+    const { error: dbError } = await supabase
+      .from("movies")
+      .update({ subtitle_tracks: existingTracks })
+      .eq("id", movieId);
+
+    if (dbError) {
+      console.error(`${logPrefix} DB update failed:`, dbError.message);
+    }
+
+    // Get a signed URL for the uploaded subtitle
+    const { data: urlData } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .createSignedUrl(subStoragePath, 3600);
+
+    console.log(`${logPrefix} External subtitle uploaded: ${subStoragePath}`);
+
+    // Cleanup uploaded temp file
+    cleanupFile(file.path);
+
+    return res.json({
+      success: true,
+      track: newTrack,
+      signedUrl: urlData?.signedUrl || null,
+    });
+  } catch (err) {
+    // Cleanup uploaded temp file on error
+    if (req.file) cleanupFile(req.file.path);
+
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error("[Subtitle] Upload failed:", errorMsg);
+    return res.status(500).json({ error: errorMsg });
+  }
+});
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -698,6 +1065,90 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+// ── POST /cleanup ────────────────────────────────────────────────────
+
+/**
+ * Deletes Storage files for archived movies.
+ * Called by the enforce-retention edge function after archiving movies.
+ *
+ * POST body: { movieIds: string[] }
+ * Returns: { deleted: number, errors: string[] }
+ */
+app.post("/cleanup", requireApiKey, async (req, res) => {
+  const { movieIds } = req.body;
+
+  if (!Array.isArray(movieIds) || movieIds.length === 0) {
+    return res.status(400).json({ error: "movieIds array is required" });
+  }
+
+  console.log(`[Cleanup] Cleaning up ${movieIds.length} archived movies...`);
+
+  let deleted = 0;
+  const errors = [];
+
+  for (const movieId of movieIds) {
+    try {
+      // Fetch movie to get all storage paths
+      const { data: movie, error: fetchErr } = await supabase
+        .from("movies")
+        .select("id, video_path, audio_path, audio_tracks, subtitle_tracks, variants")
+        .eq("id", movieId)
+        .single();
+
+      if (fetchErr || !movie) {
+        errors.push(`Movie ${movieId}: not found`);
+        continue;
+      }
+
+      const pathsToDelete = [];
+
+      if (movie.video_path) pathsToDelete.push(movie.video_path);
+      if (movie.audio_path) pathsToDelete.push(movie.audio_path);
+
+      // Audio tracks
+      if (Array.isArray(movie.audio_tracks)) {
+        for (const track of movie.audio_tracks) {
+          if (track.storagePath) pathsToDelete.push(track.storagePath);
+        }
+      }
+
+      // Subtitle tracks
+      if (Array.isArray(movie.subtitle_tracks)) {
+        for (const track of movie.subtitle_tracks) {
+          if (track.storagePath) pathsToDelete.push(track.storagePath);
+        }
+      }
+
+      // Video variants
+      if (Array.isArray(movie.variants)) {
+        for (const variant of movie.variants) {
+          if (variant.path) pathsToDelete.push(variant.path);
+        }
+      }
+
+      if (pathsToDelete.length > 0) {
+        const { error: deleteErr } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(pathsToDelete);
+
+        if (deleteErr) {
+          errors.push(`Movie ${movieId}: storage delete failed - ${deleteErr.message}`);
+        } else {
+          deleted += pathsToDelete.length;
+          console.log(`[Cleanup] Deleted ${pathsToDelete.length} files for movie ${movieId}`);
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Movie ${movieId}: ${msg}`);
+    }
+  }
+
+  console.log(`[Cleanup] Done. Deleted ${deleted} files, ${errors.length} errors.`);
+
+  return res.json({ deleted, errors });
+});
 
 // ── Start server ────────────────────────────────────────────────────
 
