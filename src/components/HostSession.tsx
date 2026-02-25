@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
-import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize, Link, Share2, AlertTriangle, ExternalLink, Music } from "lucide-react";
+import { ArrowLeft, Upload, Play, Pause, Copy, Check, Radio, Users, Maximize, Minimize, Link, Share2, AlertTriangle, ExternalLink, Music, PanelRightOpen, PanelRightClose } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useHostSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
+import { supabase } from "@/integrations/supabase/client";
 import PiPQRCode from "./PiPQRCode";
 import {
   extractAudioFromVideo,
@@ -18,16 +20,30 @@ import {
   ExtractionError,
   type ExtractionProgress,
 } from "@/utils/extractAudio";
+import SubtitleUploader from "./SubtitleUploader";
+import type { WatermarkPosition } from "@/types/profile";
+
+/** CSS classes for watermark positioning (must match Dashboard preview) */
+const WATERMARK_POSITION_CSS: Record<WatermarkPosition, string> = {
+  'top-left': 'top-4 left-4',
+  'top-right': 'top-4 right-4',
+  'bottom-left': 'bottom-4 left-4',
+  'bottom-right': 'bottom-4 right-4',
+  'center': 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
+};
 
 /** Pipeline phases for the multi-step upload process */
 type PipelinePhase = "idle" | "extracting" | "uploading" | "done" | "error";
 
 interface HostSessionProps {
   onBack: () => void;
+  /** If set, load an existing movie from DB instead of uploading a new one */
+  movieId?: string | null;
 }
 
-const HostSession = ({ onBack }: HostSessionProps) => {
+const HostSession = ({ onBack, movieId: existingMovieId }: HostSessionProps) => {
   const { session, listeners, isLoading, createSession, uploadAudio, updatePlaybackState, updateVideoInfo, updateAudioUrl } = useHostSession();
+  const { profile } = useAuth();
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -37,6 +53,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState<number | null>(null);
+  const [showSidebar, setShowSidebar] = useState(true);
   const [uploadEta, setUploadEta] = useState<number | null>(null);
   const uploadStartTimeRef = useRef<number>(0);
   const lastUploadedRef = useRef<number>(0);
@@ -55,11 +72,71 @@ const HostSession = ({ onBack }: HostSessionProps) => {
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [showFallbackHelp, setShowFallbackHelp] = useState(false);
+  /** Movie ID from extraction — used for subtitle uploads */
+  const [currentMovieId, setCurrentMovieId] = useState<string | null>(null);
 
   // Create session on mount
   useEffect(() => {
     createSession();
   }, [createSession]);
+
+  // Load existing movie from DB if movieId is provided (skip upload/extraction)
+  useEffect(() => {
+    if (!existingMovieId || !session) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        // Fetch movie record
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: movie, error } = await (supabase as any)
+          .from('movies')
+          .select('*')
+          .eq('id', existingMovieId)
+          .single();
+
+        if (cancelled || error || !movie) return;
+
+        if (movie.status !== 'ready' || !movie.audio_path || !movie.video_path) {
+          toast.error('This movie is not ready for playback yet.');
+          return;
+        }
+
+        // Get signed URLs for video and audio (1 hour expiry)
+        const [videoResult, audioResult] = await Promise.all([
+          supabase.storage.from('movies').createSignedUrl(movie.video_path, 3600),
+          supabase.storage.from('movies').createSignedUrl(movie.audio_path, 3600),
+        ]);
+
+        if (cancelled) return;
+
+        if (videoResult.error || !videoResult.data?.signedUrl) {
+          toast.error('Failed to load video from storage.');
+          return;
+        }
+        if (audioResult.error || !audioResult.data?.signedUrl) {
+          toast.error('Failed to load audio from storage.');
+          return;
+        }
+
+        // Set video URL to enter theater mode
+        setVideoUrl(videoResult.data.signedUrl);
+        setCurrentMovieId(existingMovieId);
+        setPipelinePhase('done');
+
+        // Update session with audio URL so listeners can stream
+        await updateAudioUrl(audioResult.data.signedUrl, movie.title || 'audio.mp3');
+
+        toast.success('Movie loaded from library. Listeners can now connect.');
+      } catch (err) {
+        if (!cancelled) {
+          toast.error('Failed to load movie.');
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [existingMovieId, session, updateAudioUrl]);
 
   const sessionUrl = session ? `${window.location.origin}/listen/${session.code}` : '';
 
@@ -225,10 +302,12 @@ const HostSession = ({ onBack }: HostSessionProps) => {
 
       try {
         // extractAudioFromVideo handles: upload to storage, trigger worker, poll for result
-        // Returns a signed URL for the extracted audio
-        const signedAudioUrl = await extractAudioFromVideo(file, (progress) => {
+        // Returns { audioUrl, movieId } for the extracted audio
+        const { audioUrl: signedAudioUrl, movieId } = await extractAudioFromVideo(file, (progress) => {
           setExtractionProgress(progress);
         });
+
+        setCurrentMovieId(movieId);
 
         // Update the session so listeners can stream the extracted audio
         const baseName = file.name.replace(/\.[^.]+$/, "");
@@ -471,19 +550,37 @@ const HostSession = ({ onBack }: HostSessionProps) => {
     );
   }
 
+  // Watermark logic:
+  // Enterprise + watermark_image_url → custom logo image
+  // Enterprise + no image → no watermark (white-label)
+  // Pro + watermark_text → custom text
+  // Free / Event / Pro without custom text → "SilentCine" text
+  const tierName = profile?.subscription_tier ?? 'free';
+  const isEnterprise = tierName === 'enterprise';
+  const isPro = tierName === 'pro';
+  const watermarkImageUrl = isEnterprise ? profile?.watermark_image_url : null;
+  const watermarkText = isPro && profile?.watermark_text ? profile.watermark_text : null;
+  const showWatermarkImage = isEnterprise && !!watermarkImageUrl;
+  const showWatermarkText = !isEnterprise; // free, event, pro show text watermark
+  const watermarkLabel = watermarkText || 'SilentCine';
+  const watermarkPosition: WatermarkPosition = (profile?.watermark_position as WatermarkPosition) ?? 'top-right';
+  const watermarkOpacity = profile?.watermark_opacity ?? 0.3;
+  const watermarkSize = profile?.watermark_size ?? 1.0;
+  const watermarkPositionClass = WATERMARK_POSITION_CSS[watermarkPosition];
+
   // Theater mode when video is loaded
   if (videoUrl) {
     return (
       <div 
         ref={containerRef}
-        className={`min-h-screen bg-black flex ${isFullscreen ? 'p-0' : 'p-4'}`}
+        className="h-screen w-screen bg-black flex relative overflow-hidden"
       >
-        {/* Video Area - Takes most of the screen */}
-        <div className="flex-1 flex items-center justify-center relative">
+        {/* Video Area — fills entire screen */}
+        <div className="flex-1 flex items-center justify-center relative min-w-0">
           <video
             ref={videoRef}
             src={videoUrl}
-            className="max-h-full max-w-full object-contain"
+            className="h-full w-full object-contain"
             onTimeUpdate={handleTimeUpdate}
             onLoadedMetadata={handleLoadedMetadata}
             onEnded={handleEnded}
@@ -492,6 +589,26 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             muted={isProjectorMode}
             crossOrigin="anonymous"
           />
+
+          {/* Watermark: image for enterprise, text for others, hidden for enterprise white-label */}
+          {showWatermarkImage && (
+            <div
+              className={`absolute ${watermarkPositionClass} pointer-events-none select-none z-10`}
+              style={{ opacity: watermarkOpacity }}
+            >
+              <img src={watermarkImageUrl!} alt="Watermark" className="w-auto" style={{ height: `${2.5 * watermarkSize}rem` }} />
+            </div>
+          )}
+          {showWatermarkText && (
+            <div
+              className={`absolute ${watermarkPositionClass} pointer-events-none select-none z-10`}
+              style={{ opacity: watermarkOpacity }}
+            >
+              <span className="font-display text-white font-bold tracking-wide" style={{ fontSize: `${1.125 * watermarkSize}rem` }}>
+                {watermarkLabel}
+              </span>
+            </div>
+          )}
           
           {/* Play/Pause overlay */}
           {!isPlaying && (
@@ -508,7 +625,7 @@ const HostSession = ({ onBack }: HostSessionProps) => {
           )}
 
           {/* Bottom controls bar */}
-          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent z-20">
             <div className="flex items-center gap-4">
               {/* Progress bar */}
               <div className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden cursor-pointer"
@@ -549,6 +666,17 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                 {isProjectorMode ? 'Projector Mode' : 'Test Mode (Audio On)'}
               </button>
 
+              {/* Toggle sidebar */}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowSidebar(!showSidebar)}
+                className="text-white hover:bg-white/20"
+                title={showSidebar ? 'Hide QR panel' : 'Show QR panel'}
+              >
+                {showSidebar ? <PanelRightClose className="w-5 h-5" /> : <PanelRightOpen className="w-5 h-5" />}
+              </Button>
+
               {/* Fullscreen toggle */}
               <Button
                 variant="ghost"
@@ -566,184 +694,194 @@ const HostSession = ({ onBack }: HostSessionProps) => {
             <Button 
               variant="ghost" 
               onClick={onBack} 
-              className="absolute top-4 left-4 text-white hover:bg-white/20"
+              className="absolute top-4 left-4 text-white hover:bg-white/20 z-20"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back
             </Button>
           )}
-        </div>
 
-        {/* QR Code Sidebar — high contrast for outdoor/projector readability */}
-        <div className={`flex flex-col items-center justify-center bg-black ${isFullscreen ? 'w-80 p-4' : 'w-80 p-6 rounded-2xl ml-4'}`}>
-          {/* Pipeline Status */}
-          {pipelinePhase === "extracting" ? (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-violet-500/10 text-violet-500 text-sm font-medium mb-4"
-            >
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                className="w-3.5 h-3.5 rounded-full border-2 border-violet-500/30 border-t-violet-500"
-              />
-              Extracting Audio...
-            </motion.div>
-          ) : isUploading ? (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-500 text-sm font-medium mb-4"
-            >
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                className="w-3.5 h-3.5 rounded-full border-2 border-amber-500/30 border-t-amber-500"
-              />
-              Uploading Audio...
-            </motion.div>
-          ) : (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
-              <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
-              {session?.audio_url ? "Ready to Stream" : "Session Live"}
-            </div>
-          )}
-
-          <h2 className="font-display text-lg font-bold text-white mb-1 text-center">
-            Scan to Listen
-          </h2>
-          {/* Room code — 60px+ for outdoor readability at 10 feet */}
-          <p className="text-white font-display font-bold tracking-[0.3em] text-center mb-4"
-             style={{ fontSize: '64px', lineHeight: 1.1 }}>
-            {session?.code}
-          </p>
-
-          {/* Pipeline Progress Bar (extraction + upload) */}
-          {pipelinePhase === "extracting" && extractionProgress && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="w-full mb-4"
-            >
-              <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>{extractionProgress.message}</span>
-                <span className="font-medium">{extractionProgress.percent}%</span>
-              </div>
-              <Progress value={extractionProgress.percent} className="h-2" />
-            </motion.div>
-          )}
-          {pipelinePhase === "uploading" && isUploading && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="w-full mb-4"
-            >
-              <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span className="flex items-center gap-1.5">
-                  Uploading...
-                  {uploadSpeed !== null && uploadSpeed > 0 && (
-                    <span className="text-primary font-medium">
-                      {uploadSpeed >= 1 
-                        ? `${uploadSpeed.toFixed(1)} MB/s` 
-                        : `${(uploadSpeed * 1024).toFixed(0)} KB/s`}
-                    </span>
-                  )}
-                </span>
-                <span className="flex items-center gap-2">
-                  {uploadEta !== null && uploadEta > 0 && uploadProgress < 99 && (
-                    <span className="text-muted-foreground/70">
-                      ~{formatEta(uploadEta)} left
-                    </span>
-                  )}
-                  <span className="font-medium">{Math.round(uploadProgress)}%</span>
-                </span>
-              </div>
-              <Progress value={uploadProgress} className="h-2" />
-            </motion.div>
-          )}
-
-          {/* QR Code — 256px for outdoor scanning distance */}
-          <div className="bg-white p-5 rounded-xl mb-4">
-            <QRCodeSVG
-              value={sessionUrl}
-              size={256}
-              level="H"
-              includeMargin={false}
-              bgColor="#ffffff"
-              fgColor="#000000"
-            />
-          </div>
-
-          {/* Listener count with health indicators */}
-          <div className="flex flex-col items-center gap-1.5 text-white/70 mb-4">
-            <div className="flex items-center gap-2">
-              <Users className="w-4 h-4" />
-              <span className="text-sm font-medium">
-                {listeners.length} listener{listeners.length !== 1 ? 's' : ''}
-              </span>
-            </div>
+          {/* Listener count badge (top left, below back button) */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 text-white/80 text-sm">
+            <Users className="w-3.5 h-3.5" />
+            <span>{listeners.length} listener{listeners.length !== 1 ? 's' : ''}</span>
             {listeners.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+              <div className="flex items-center gap-1 ml-1">
                 {listeners.map((l) => {
                   const pingAge = Date.now() - new Date(l.last_ping_at).getTime();
-                  const isHealthy = pingAge < 35000;   // pinged within 35s
+                  const isHealthy = pingAge < 35000;
                   const isWarning = pingAge >= 35000 && pingAge < 90000;
                   return (
                     <span
                       key={l.id}
-                      className={`w-2.5 h-2.5 rounded-full ${
+                      className={`w-2 h-2 rounded-full ${
                         isHealthy ? 'bg-green-500' : isWarning ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'
                       }`}
-                      title={`Last ping: ${Math.round(pingAge / 1000)}s ago`}
                     />
                   );
                 })}
               </div>
             )}
           </div>
-
-          {/* Audio Status */}
-          {!isUploading && (
-            <div className={`text-xs mb-3 px-3 py-1.5 rounded-full ${session?.audio_url ? 'bg-green-500/10 text-green-500' : 'bg-white/10 text-white/60'}`}>
-              {session?.audio_url ? 'Audio ready for listeners' : 'Preparing audio...'}
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex flex-col gap-2 w-full">
-            {/* Web Share API on supported devices, otherwise copy */}
-            {typeof navigator !== 'undefined' && navigator.share ? (
-              <Button
-                variant="cinema"
-                size="sm"
-                onClick={shareSession}
-                className="w-full"
-              >
-                <Share2 className="w-4 h-4 mr-2" />
-                Share Link
-              </Button>
-            ) : (
-              <Button
-                variant="cinema"
-                size="sm"
-                onClick={copyLink}
-                className="w-full"
-              >
-                {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                {copied ? 'Copied!' : 'Copy Link'}
-              </Button>
-            )}
-            
-            {/* PiP QR Code */}
-            <PiPQRCode url={sessionUrl} sessionCode={session?.code || ''} />
-          </div>
-
-          {/* Instructions */}
-          <div className="mt-4 text-xs text-white/50 text-center">
-            <p>Point your phone camera at the QR code to get audio</p>
-          </div>
         </div>
+
+        {/* QR Code Sidebar — fixed column on the right, video fills remaining space */}
+        <AnimatePresence>
+          {showSidebar && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 320, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="shrink-0 h-full bg-black/95 backdrop-blur-sm border-l border-white/10 flex flex-col items-center justify-center p-6 overflow-y-auto overflow-x-hidden"
+            >
+              {/* Pipeline Status */}
+              {pipelinePhase === "extracting" ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-violet-500/10 text-violet-500 text-sm font-medium mb-4"
+                >
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    className="w-3.5 h-3.5 rounded-full border-2 border-violet-500/30 border-t-violet-500"
+                  />
+                  Extracting Audio...
+                </motion.div>
+              ) : isUploading ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-500 text-sm font-medium mb-4"
+                >
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    className="w-3.5 h-3.5 rounded-full border-2 border-amber-500/30 border-t-amber-500"
+                  />
+                  Uploading Audio...
+                </motion.div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-medium mb-4">
+                  <Radio className="w-3.5 h-3.5 animate-pulse-glow" />
+                  {session?.audio_url ? "Ready to Stream" : "Session Live"}
+                </div>
+              )}
+
+              <h2 className="font-display text-lg font-bold text-white mb-1 text-center">
+                Scan to Listen
+              </h2>
+              {/* Room code — large for outdoor readability */}
+              <p className="text-white font-display font-bold tracking-[0.3em] text-center mb-4"
+                 style={{ fontSize: '48px', lineHeight: 1.1 }}>
+                {session?.code}
+              </p>
+
+              {/* Pipeline Progress Bar (extraction + upload) */}
+              {pipelinePhase === "extracting" && extractionProgress && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="w-full mb-4"
+                >
+                  <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                    <span>{extractionProgress.message}</span>
+                    <span className="font-medium">{extractionProgress.percent}%</span>
+                  </div>
+                  <Progress value={extractionProgress.percent} className="h-2" />
+                </motion.div>
+              )}
+              {pipelinePhase === "uploading" && isUploading && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="w-full mb-4"
+                >
+                  <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                    <span className="flex items-center gap-1.5">
+                      Uploading...
+                      {uploadSpeed !== null && uploadSpeed > 0 && (
+                        <span className="text-primary font-medium">
+                          {uploadSpeed >= 1 
+                            ? `${uploadSpeed.toFixed(1)} MB/s` 
+                            : `${(uploadSpeed * 1024).toFixed(0)} KB/s`}
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      {uploadEta !== null && uploadEta > 0 && uploadProgress < 99 && (
+                        <span className="text-muted-foreground/70">
+                          ~{formatEta(uploadEta)} left
+                        </span>
+                      )}
+                      <span className="font-medium">{Math.round(uploadProgress)}%</span>
+                    </span>
+                  </div>
+                  <Progress value={uploadProgress} className="h-2" />
+                </motion.div>
+              )}
+
+              {/* QR Code — 220px for sidebar fit */}
+              <div className="bg-white p-4 rounded-xl mb-4">
+                <QRCodeSVG
+                  value={sessionUrl}
+                  size={220}
+                  level="H"
+                  includeMargin={false}
+                  bgColor="#ffffff"
+                  fgColor="#000000"
+                />
+              </div>
+
+              {/* Audio Status */}
+              {!isUploading && (
+                <div className={`text-xs mb-3 px-3 py-1.5 rounded-full ${session?.audio_url ? 'bg-green-500/10 text-green-500' : 'bg-white/10 text-white/60'}`}>
+                  {session?.audio_url ? 'Audio ready for listeners' : 'Preparing audio...'}
+                </div>
+              )}
+
+              {/* Subtitle Uploader — only show after extraction is done */}
+              {pipelinePhase === "done" && currentMovieId && (
+                <div className="mb-3 w-full">
+                  <SubtitleUploader
+                    movieId={currentMovieId}
+                    onUploaded={(track) => {
+                      if (session) {
+                        const currentSubs = session.subtitle_tracks || [];
+                        updateVideoInfo(
+                          session.video_url || '',
+                          session.audio_tracks || [],
+                          [...currentSubs, { index: currentSubs.length, label: track.label, language: track.language, storagePath: track.storagePath }],
+                        );
+                      }
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex flex-col gap-2 w-full">
+                {typeof navigator !== 'undefined' && navigator.share ? (
+                  <Button variant="cinema" size="sm" onClick={shareSession} className="w-full">
+                    <Share2 className="w-4 h-4 mr-2" />
+                    Share Link
+                  </Button>
+                ) : (
+                  <Button variant="cinema" size="sm" onClick={copyLink} className="w-full">
+                    {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                    {copied ? 'Copied!' : 'Copy Link'}
+                  </Button>
+                )}
+                <PiPQRCode url={sessionUrl} sessionCode={session?.code || ''} />
+              </div>
+
+              <div className="mt-4 text-xs text-white/50 text-center">
+                <p>Point your phone camera at the QR code</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -955,9 +1093,10 @@ const HostSession = ({ onBack }: HostSessionProps) => {
                                 setShowFallbackHelp(false);
                                 setIsUploading(true);
                                 try {
-                                  const signedAudioUrl = await extractAudioFromVideo(videoFile, (progress) => {
+                                  const { audioUrl: signedAudioUrl, movieId } = await extractAudioFromVideo(videoFile, (progress) => {
                                     setExtractionProgress(progress);
                                   });
+                                  setCurrentMovieId(movieId);
                                   const baseName = videoFile.name.replace(/\.[^.]+$/, "");
                                   await updateAudioUrl(signedAudioUrl, `${baseName}.mp3`);
                                   setPipelinePhase("done");

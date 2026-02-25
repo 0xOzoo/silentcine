@@ -25,10 +25,10 @@ interface QualitySelectorProps {
 const QUALITY_LABELS: Record<QualityProfile, { label: string; description: string }> = {
   "720p": { label: "720p", description: "HD — Best for mobile" },
   "1080p": { label: "1080p", description: "Full HD" },
-  "4k_hdr": { label: "4K HDR", description: "Ultra HD" },
+  "4k": { label: "4K", description: "Ultra HD — Enterprise" },
 };
 
-const ALL_QUALITIES: QualityProfile[] = ["720p", "1080p", "4k_hdr"];
+const ALL_QUALITIES: QualityProfile[] = ["720p", "1080p", "4k"];
 
 export default function QualitySelector({
   currentQuality,
@@ -99,9 +99,7 @@ export default function QualitySelector({
               {!allowed && (
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Lock className="w-3 h-3" />
-                  <span>
-                    {quality === "4k_hdr" ? "Enterprise" : "Pro"}
-                  </span>
+                  <span>Pro</span>
                 </div>
               )}
               {allowed && !available && (

@@ -460,11 +460,16 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Check if profile already exists
+      // Check if a truly anonymous profile already exists for this ID.
+      // IMPORTANT: filter anonymous=true so we don't match a bridged
+      // (authenticated) profile that still carries the same anonymous_id.
+      // Without this, signing out + refreshing would return the old
+      // authenticated profile data to the now-anonymous user.
       const { data: existing } = await supabaseAdmin
         .from("profiles")
         .select("*")
         .eq("anonymous_id", anonymousId)
+        .eq("anonymous", true)
         .maybeSingle();
 
       if (existing) {
@@ -493,6 +498,7 @@ Deno.serve(async (req) => {
           .from("profiles")
           .select("*")
           .eq("anonymous_id", anonymousId)
+          .eq("anonymous", true)
           .maybeSingle();
 
         if (retryProfile) {

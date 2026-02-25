@@ -9,12 +9,21 @@ export interface AudioTrack {
   index: number;
   label: string;
   language: string;
+  /** Storage path in Supabase (set by worker after extraction) */
+  storagePath?: string;
+  codec?: string;
+  channels?: number;
 }
 
 export interface SubtitleTrack {
   index: number;
   label: string;
   language: string;
+  /** Storage path in Supabase (set by worker after extraction) */
+  storagePath?: string;
+  format?: string;
+  /** Whether this is an external upload (not embedded in the video) */
+  external?: boolean;
 }
 
 export interface Session {

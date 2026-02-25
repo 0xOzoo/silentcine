@@ -3,17 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Languages, Volume2, X, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export interface AudioTrack {
-  index: number;
-  label: string;
-  language: string;
-}
-
-export interface SubtitleTrack {
-  index: number;
-  label: string;
-  language: string;
-}
+import type { AudioTrack, SubtitleTrack } from "@/hooks/useSession";
+// Re-export types for backward compatibility
+export type { AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 
 interface TrackSelectorProps {
   audioTracks: AudioTrack[];

@@ -6,8 +6,11 @@ import { Slider } from "@/components/ui/slider";
 import { useListenerSession, AudioTrack, SubtitleTrack } from "@/hooks/useSession";
 import SyncCalibration from "./SyncCalibration";
 import TrackSelector from "./TrackSelector";
+import SubtitleOverlay from "./SubtitleOverlay";
 import QRScanner from "./QRScanner";
+import { supabase } from "@/integrations/supabase/client";
 import { cacheAudioFromUrl, getCachedAudioUrl, isOpfsSupported } from "@/lib/opfs";
+import { useDriftCorrection } from "@/hooks/useDriftCorrection";
 
 const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
@@ -27,16 +30,18 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   const [syncOffset, setSyncOffset] = useState(0);
   const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(-1);
-  const [currentSubtitle, setCurrentSubtitle] = useState<string | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [shouldAutoConnect, setShouldAutoConnect] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(!IS_MOBILE);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [cachedAudioUrl, setCachedAudioUrl] = useState<string | null>(null);
   const [isAudioCached, setIsAudioCached] = useState(false);
+  const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0);
+  const [resolvedTrackAudioUrl, setResolvedTrackAudioUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLVideoElement>(null);
   const lastSyncRef = useRef<string | null>(null);
   const sessionRef = useRef(sessionId || "");
+  const lastResolvedTrackRef = useRef<number>(-1);
 
   const { session, isConnected, isLoading, networkLatencyMs, syncIntervalMs, setSyncIntervalMs, connect } = useListenerSession(inputCode);
 
@@ -161,8 +166,8 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.audio_url, session?.code]);
 
-  // Resolve audio source: OPFS cache > remote URL
-  const resolvedAudioUrl = cachedAudioUrl || session?.audio_url || null;
+  // Resolve audio source: per-track URL > OPFS cache > session audio_url
+  const resolvedAudioUrl = resolvedTrackAudioUrl || cachedAudioUrl || session?.audio_url || null;
 
   // Handle volume changes
   useEffect(() => {
@@ -171,54 +176,86 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
     }
   }, [volume, isMuted]);
 
-  // Handle audio track change
+  // Handle audio track change — resolve per-track signed URL
   const handleAudioTrackChange = (index: number) => {
     setSelectedAudioTrack(index);
+
+    // If the track has a storagePath, we need to get a signed URL for it
+    const track = audioTracks[index];
+    if (track?.storagePath && index !== 0) {
+      // Track 0 uses the session's audio_url (backward compatible).
+      // Other tracks need their own signed URL.
+      (async () => {
+        try {
+          const { data, error } = await supabase.storage
+            .from("movies")
+            .createSignedUrl(track.storagePath!, 3600);
+          if (error || !data?.signedUrl) {
+            log("Failed to get signed URL for audio track", index, error?.message);
+            return;
+          }
+          log("Resolved audio track", index, "URL:", data.signedUrl.slice(0, 80));
+          setResolvedTrackAudioUrl(data.signedUrl);
+          lastResolvedTrackRef.current = index;
+          // Clear cache state since we're switching tracks
+          setCachedAudioUrl(null);
+          setIsAudioCached(false);
+        } catch (err) {
+          log("Error resolving audio track URL:", err);
+        }
+      })();
+    } else {
+      // Track 0 or no storagePath — use session audio_url
+      setResolvedTrackAudioUrl(null);
+      lastResolvedTrackRef.current = -1;
+    }
   };
 
   // Handle subtitle track change
   const handleSubtitleTrackChange = (index: number) => {
     setSelectedSubtitleTrack(index);
-    if (index === -1) {
-      setCurrentSubtitle(null);
-    }
   };
 
-  // Sync playback with host (with calibration offset and latency compensation)
+  // Web Audio API drift correction — handles ongoing micro-adjustments via playback rate
+  useDriftCorrection({
+    audioRef,
+    isPlaying: localIsPlaying,
+    targetTime: (session?.current_time_ms ?? 0) / 1000,
+    lastSyncAt: session?.last_sync_at ?? null,
+    syncOffsetMs: syncOffset,
+    networkLatencyMs,
+    enabled: audioUnlocked && !!resolvedAudioUrl,
+  });
+
+  // Sync playback state with host (play/pause transitions + initial seek)
   useEffect(() => {
     if (!session || !audioRef.current || !resolvedAudioUrl) return;
-    // Don't attempt playback until audio is unlocked on mobile
     if (!audioUnlocked) return;
 
     const audio = audioRef.current;
-
-    // Sync on every poll update (not just when last_sync_at changes)
-    // This ensures continuous drift correction even when host keeps playing
     const targetTimeSeconds = session.current_time_ms / 1000;
 
-    // Calculate time elapsed since the host last synced state
-    const syncTimestamp = session.last_sync_at ? new Date(session.last_sync_at).getTime() : Date.now();
-    const timeSinceSync = Math.max(0, (Date.now() - syncTimestamp) / 1000);
-    
-    // Apply user calibration offset and network latency compensation
-    const offsetSeconds = syncOffset / 1000;
-    const latencyCompensation = networkLatencyMs / 1000;
-
-    // If playing, extrapolate where playback should be now
-    // Add latency compensation to account for network delay
-    const compensatedTime = session.is_playing
-      ? targetTimeSeconds + timeSinceSync + offsetSeconds + latencyCompensation
-      : targetTimeSeconds + offsetSeconds;
-
-    // Drift threshold: only seek if >0.5s off (avoids micro-stutters)
-    const currentDiff = Math.abs(audio.currentTime - compensatedTime);
-    if (currentDiff > 0.5) {
-      log(`Sync correction: drift=${currentDiff.toFixed(2)}s, latency=${networkLatencyMs}ms, seeking to ${compensatedTime.toFixed(2)}s`);
-      audio.currentTime = Math.max(0, compensatedTime);
+    // For initial positioning when first connecting or when paused,
+    // do a direct seek (drift correction handles the rest during playback)
+    if (!session.is_playing) {
+      const offsetSeconds = syncOffset / 1000;
+      const compensatedTime = targetTimeSeconds + offsetSeconds;
+      const currentDiff = Math.abs(audio.currentTime - compensatedTime);
+      if (currentDiff > 0.5) {
+        audio.currentTime = Math.max(0, compensatedTime);
+      }
     }
 
     // Handle play/pause state transitions
     if (session.is_playing && audio.paused) {
+      // Initial seek before play
+      const syncTimestamp = session.last_sync_at ? new Date(session.last_sync_at).getTime() : Date.now();
+      const timeSinceSync = Math.max(0, (Date.now() - syncTimestamp) / 1000);
+      const offsetSeconds = syncOffset / 1000;
+      const latencyCompensation = networkLatencyMs / 1000;
+      const compensatedTime = targetTimeSeconds + timeSinceSync + offsetSeconds + latencyCompensation;
+      audio.currentTime = Math.max(0, compensatedTime);
+
       audio.play()
         .then(() => {
           setLocalIsPlaying(true);
@@ -226,7 +263,6 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
         })
         .catch(err => {
           log('Play blocked by browser:', err);
-          // If play fails on mobile, reset unlock state so overlay re-appears
           if (IS_MOBILE) {
             setAudioUnlocked(false);
             setAudioError('Tap "Enable Audio" to resume playback');
@@ -424,6 +460,11 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
                 preload="auto"
                 playsInline
                 style={{ display: 'none' }}
+                onTimeUpdate={() => {
+                  if (audioRef.current) {
+                    setCurrentPlaybackTime(audioRef.current.currentTime);
+                  }
+                }}
                 onError={(e) => {
                   const target = e.currentTarget;
                   log('Audio load error:', target.error?.message, 'code:', target.error?.code);
@@ -442,12 +483,12 @@ const ListenerView = ({ onBack, sessionId }: ListenerViewProps) => {
               />
             )}
 
-            {/* Current Subtitle Display */}
-            {currentSubtitle && (
-              <div className="mb-4 p-3 rounded-lg bg-black/80 text-white text-center text-sm">
-                {currentSubtitle}
-              </div>
-            )}
+            {/* Subtitle Overlay */}
+            <SubtitleOverlay
+              track={selectedSubtitleTrack >= 0 ? (subtitleTracks[selectedSubtitleTrack] || null) : null}
+              currentTime={currentPlaybackTime}
+              isPlaying={localIsPlaying}
+            />
 
             {/* Now Playing */}
             <div className="text-center py-8">

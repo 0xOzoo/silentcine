@@ -8,3 +8,31 @@ verify_jwt = false
 
 [functions.listener-manager]
 verify_jwt = false
+
+# Stripe webhook — called by Stripe servers (no JWT, uses stripe-signature header)
+[functions.stripe-webhook]
+verify_jwt = false
+
+# Checkout functions — called from frontend with anon key
+[functions.create-checkout-session]
+verify_jwt = false
+
+[functions.create-event-pass]
+verify_jwt = false
+
+[functions.customer-portal]
+verify_jwt = false
+
+[functions.stripe-verify-session]
+verify_jwt = false
+
+# Dashboard API functions — use JWT from request body/header
+[functions.movie-manager]
+verify_jwt = false
+
+[functions.account-manager]
+verify_jwt = false
+
+# Retention cron — called by Supabase cron or admin
+[functions.enforce-retention]
+verify_jwt = false

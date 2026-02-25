@@ -50,9 +50,10 @@ const HeroSection = ({ onHostClick, onListenClick }: HeroSectionProps) => {
           </h1>
 
           {/* Subtitle */}
-          <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-            Host outdoor screenings without disturbing neighbors. Viewers scan a QR code 
-            to stream synchronized audio directly to their phones.
+          <p className="text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto mb-10 leading-relaxed">
+            Host outdoor screenings without disturbing neighbors.
+            <br />
+            Viewers scan a QR code to stream synchronized audio directly to their phones.
           </p>
 
           {/* CTA Buttons */}

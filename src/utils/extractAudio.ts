@@ -71,6 +71,14 @@ export function getFileSizeLimit(): number {
   return MAX_FILE_SIZE;
 }
 
+/** Result from a successful extraction */
+export interface ExtractionResult {
+  /** Signed URL for the primary (track 0) extracted audio */
+  audioUrl: string;
+  /** The movie record ID in the database */
+  movieId: string;
+}
+
 /**
  * Extract audio from a video file via server worker.
  *
@@ -79,17 +87,17 @@ export function getFileSizeLimit(): number {
  * 2. Insert a record in the movies table
  * 3. POST to server /extract endpoint to trigger extraction
  * 4. Poll movies table until status is 'ready' or 'error'
- * 5. Return signed URL for the extracted audio
+ * 5. Return signed URL for the extracted audio + movieId
  *
  * @param videoFile - The video file to extract audio from
  * @param onProgress - Callback for progress updates
- * @returns The signed URL for the extracted audio file
+ * @returns ExtractionResult with audioUrl and movieId
  * @throws {ExtractionError} If extraction fails at any stage
  */
 export async function extractAudioFromVideo(
   videoFile: File,
   onProgress?: (p: ExtractionProgress) => void,
-): Promise<string> {
+): Promise<ExtractionResult> {
   // ── Guards ──────────────────────────────────────────────────
   if (videoFile.size > MAX_FILE_SIZE) {
     throw new ExtractionError(
@@ -221,7 +229,7 @@ export async function extractAudioFromVideo(
     const audioUrl = await pollForResult(movieId, emit);
 
     emit("done", 100, "Audio extraction complete!");
-    log("Extraction complete, audio URL:", audioUrl);
+    log("Extraction complete, audio URL:", audioUrl, "movieId:", movieId);
 
     // Cache extracted audio in OPFS for offline/instant replay
     // Use movieId as session code for cache key (unique per extraction)
@@ -233,7 +241,7 @@ export async function extractAudioFromVideo(
       log("OPFS audio cache failed (non-fatal):", cacheErr);
     }
 
-    return audioUrl;
+    return { audioUrl, movieId };
   } catch (error) {
     if (error instanceof ExtractionError) throw error;
     const msg = error instanceof Error ? error.message : String(error);

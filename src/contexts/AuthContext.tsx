@@ -26,6 +26,8 @@ interface AuthActions {
   signOut: () => Promise<void>;
   /** Link current anonymous profile to the newly created auth account */
   bridgeAnonymousProfile: () => Promise<void>;
+  /** Re-fetch profile from DB (call after payment/tier change to update UI) */
+  refreshProfile: () => Promise<void>;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -51,6 +53,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Mutex to prevent concurrent ensureAnonymousProfile calls (race condition)
   const ensureProfileInflight = useRef<Promise<Profile | null> | null>(null);
+  // Flag to prevent onAuthStateChange from re-running anonymous profile setup during signOut
+  const isSigningOut = useRef(false);
 
   /** Fetch profile by auth_user_id or anonymous_id */
   const fetchProfile = useCallback(async (authUserId?: string): Promise<Profile | null> => {
@@ -66,11 +70,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return data as Profile | null;
       }
 
-      // Anonymous: find by anonymous_id
+      // Anonymous: find by anonymous_id — only match truly anonymous profiles.
+      // After bridging, the authenticated profile keeps the same anonymous_id
+      // but has anonymous=false. Without this filter, sign-out + refresh would
+      // find the bridged profile and display stale user data.
       const { data, error } = await (supabase as any)
         .from('profiles')
         .select('*')
         .eq('anonymous_id', anonymousId)
+        .eq('anonymous', true)
         .maybeSingle();
       if (error) console.error('[Auth] Anon profile fetch error:', error);
       return data as Profile | null;
@@ -131,7 +139,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [anonymousId, fetchProfile]);
 
-  /** Bridge anonymous profile to authenticated account */
+  /** Bridge anonymous profile to authenticated account.
+   *  Also migrates movies and sessions owned by the anonymous profile. */
   const bridgeAnonymousProfile = useCallback(async () => {
     if (!user) return;
 
@@ -149,11 +158,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
         .eq('id', anonProfile.id);
 
+      // Migrate movies owned by anonymous profile to the now-authenticated profile.
+      // The profile ID stays the same (we update the profile in-place), so
+      // movies.profile_id already points to the correct row. But movies that
+      // were created with user_id = anonymousId need to be re-linked.
+      await (supabase as any)
+        .from('movies')
+        .update({ profile_id: anonProfile.id })
+        .eq('user_id', anonymousId)
+        .is('profile_id', null);
+
+      // Migrate sessions: link any sessions missing a profile_id
+      await (supabase as any)
+        .from('sessions')
+        .update({ profile_id: anonProfile.id })
+        .is('profile_id', null);
+
+      console.log('[Auth] Anonymous profile bridged + data migrated for', user.email);
+
       // Refresh profile
       const updated = await fetchProfile(user.id);
       if (updated) setProfile(updated);
     }
-  }, [user, fetchProfile]);
+  }, [user, anonymousId, fetchProfile]);
 
   // Initialize auth state
   useEffect(() => {
@@ -166,17 +193,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!mounted) return;
 
       if (existingSession?.user) {
+        // Fetch profile BEFORE setting user/session so there's no intermediate
+        // render where isAuthenticated=true but profile is still null (shows "Free").
+        const prof = await fetchProfile(existingSession.user.id);
+        if (!mounted) return;
         setSession(existingSession);
         setUser(existingSession.user);
-        const prof = await fetchProfile(existingSession.user.id);
-        if (mounted) setProfile(prof);
+        setProfile(prof);
+        setLoading(false);
       } else {
-        // Anonymous user: ensure shadow profile
+        // No session — user is anonymous. Set loading=false immediately so the
+        // Header shows "Sign In" / "Sign Up" without waiting for the anonymous
+        // profile edge function call.
+        setLoading(false);
+
+        // Ensure shadow profile in the background (non-blocking)
         const prof = await ensureAnonymousProfile();
         if (mounted) setProfile(prof);
       }
-
-      if (mounted) setLoading(false);
     };
 
     init();
@@ -185,15 +219,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!mounted) return;
 
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
+      // If signOut() is handling the transition, skip to avoid duplicate work
+      if (isSigningOut.current) return;
 
       if (newSession?.user) {
+        // Fetch profile BEFORE setting user so there's no flash of "Free" badge
         const prof = await fetchProfile(newSession.user.id);
+        if (!mounted) return;
+        setSession(newSession);
+        setUser(newSession.user);
         setProfile(prof);
       } else {
+        setSession(null);
+        setUser(null);
         const prof = await ensureAnonymousProfile();
-        setProfile(prof);
+        if (mounted) setProfile(prof);
       }
     });
 
@@ -227,11 +267,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: null };
   }, [bridgeAnonymousProfile]);
 
+  const refreshProfile = useCallback(async () => {
+    if (user) {
+      const prof = await fetchProfile(user.id);
+      if (prof) setProfile(prof);
+    } else {
+      const prof = await fetchProfile();
+      if (prof) setProfile(prof);
+    }
+  }, [user, fetchProfile]);
+
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    // Prevent onAuthStateChange from duplicating the anonymous profile work
+    isSigningOut.current = true;
+
+    // Clear auth state immediately so UI updates without waiting for onAuthStateChange
+    setUser(null);
+    setSession(null);
+    setProfile(null);
+
+    // Use scope: 'local' to guarantee localStorage is cleared even if the
+    // server-side token revocation fails (network error, etc.)
+    await supabase.auth.signOut({ scope: 'local' });
+
+    // Belt-and-suspenders: nuke ALL Supabase auth keys from localStorage
+    // to prevent any "ghost session" showing up after page refresh.
+    // Supabase may store under different key variants.
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('sb-') || key.startsWith('supabase'))) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
     // After sign-out, user becomes anonymous again
     const prof = await ensureAnonymousProfile();
     setProfile(prof);
+
+    isSigningOut.current = false;
   }, [ensureAnonymousProfile]);
 
   const value: AuthContextValue = {
@@ -245,6 +320,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signIn,
     signOut,
     bridgeAnonymousProfile,
+    refreshProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

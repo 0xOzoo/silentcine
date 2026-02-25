@@ -53,6 +53,7 @@ const ROOT_DIR_NAME = "silentcine";
 const META_FILE = "meta.json";
 const VIDEO_FILE = "video.mp4";
 const AUDIO_FILE = "audio.mp3";
+const SUBTITLE_PREFIX = "subtitle_";
 
 /**
  * Default max cache size: 2 GB.
@@ -501,6 +502,54 @@ async function updateMeta(
   await writable.close();
 }
 
+// ── Subtitle caching ────────────────────────────────────────────────
+
+/**
+ * Cache a subtitle VTT file in OPFS for a session.
+ *
+ * @param sessionCode - Session code (directory name)
+ * @param trackIndex - Subtitle track index (used as filename suffix)
+ * @param vttContent - The WebVTT content string
+ */
+export async function cacheSubtitle(
+  sessionCode: string,
+  trackIndex: number,
+  vttContent: string,
+): Promise<void> {
+  if (!(await isOpfsSupported())) return;
+
+  const dir = await getSessionDir(sessionCode, true);
+  if (!dir) return;
+
+  const fileName = `${SUBTITLE_PREFIX}${trackIndex}.vtt`;
+  const blob = new Blob([vttContent], { type: "text/vtt" });
+  await writeFileStreaming(dir, fileName, blob);
+  log(`Cached subtitle track ${trackIndex} for session ${sessionCode}`);
+}
+
+/**
+ * Get cached subtitle content for a session track, or null if not cached.
+ */
+export async function getCachedSubtitle(
+  sessionCode: string,
+  trackIndex: number,
+): Promise<string | null> {
+  if (!(await isOpfsSupported())) return null;
+
+  const dir = await getSessionDir(sessionCode);
+  if (!dir) return null;
+
+  try {
+    const fileName = `${SUBTITLE_PREFIX}${trackIndex}.vtt`;
+    const fileHandle = await dir.getFileHandle(fileName);
+    const file = await fileHandle.getFile();
+    if (file.size === 0) return null;
+    return await file.text();
+  } catch {
+    return null;
+  }
+}
+
 // ── Quality-aware caching ───────────────────────────────────────────
 
 /**
@@ -509,7 +558,7 @@ async function updateMeta(
  * (only one quality is cached at a time to save disk space).
  *
  * @param sessionCode - Session code (directory name)
- * @param quality - Quality label (e.g., "720p", "1080p", "4k_hdr")
+ * @param quality - Quality label (e.g., "720p", "1080p")
  * @param videoUrl - URL to download the video variant from
  * @param onProgress - Optional progress callback (0-100)
  */

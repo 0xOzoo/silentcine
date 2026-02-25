@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useSearchParams } from "react-router-dom";
 import HeroSection from "@/components/HeroSection";
 import HostSession from "@/components/HostSession";
 import ListenerView from "@/components/ListenerView";
@@ -7,7 +8,20 @@ import ListenerView from "@/components/ListenerView";
 type View = "home" | "host" | "listener";
 
 const Index = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [currentView, setCurrentView] = useState<View>("home");
+  const [hostMovieId, setHostMovieId] = useState<string | null>(null);
+
+  // Auto-open host view if ?movieId= is in URL (from Dashboard "Host" button)
+  useEffect(() => {
+    const movieId = searchParams.get('movieId');
+    if (movieId) {
+      setHostMovieId(movieId);
+      setCurrentView('host');
+      // Clean the URL without triggering a re-render loop
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -33,7 +47,7 @@ const Index = () => {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <HostSession onBack={() => setCurrentView("home")} />
+            <HostSession onBack={() => { setCurrentView("home"); setHostMovieId(null); }} movieId={hostMovieId} />
           </motion.div>
         )}
 
