@@ -151,6 +151,29 @@ export async function extractAudioFromVideo(
     emit("uploading", 50, "Video uploaded, creating record...");
 
     // ── 2. Insert movies table record ───────────────────────────
+    // Look up the current user's profile so movies are linked + retention set correctly
+    let profileId: string | null = null;
+    let retentionPolicy = "7_days"; // safe default for free tier
+    const tierRetention: Record<string, string> = {
+      free: "7_days", event: "30_days", pro: "permanent", enterprise: "permanent",
+    };
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: prof } = await (supabase as any)
+          .from("profiles")
+          .select("id, subscription_tier")
+          .eq("auth_user_id", user.id)
+          .single();
+        if (prof) {
+          profileId = prof.id;
+          retentionPolicy = tierRetention[prof.subscription_tier] ?? "7_days";
+        }
+      }
+    } catch {
+      log("Could not resolve profile_id, inserting without it");
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: movie, error: dbError } = await (supabase as any)
       .from("movies")
@@ -158,6 +181,8 @@ export async function extractAudioFromVideo(
         title: videoFile.name,
         video_path: videoPath,
         status: "uploaded",
+        retention_policy: retentionPolicy,
+        ...(profileId ? { profile_id: profileId } : {}),
       })
       .select()
       .single();
