@@ -1,5 +1,5 @@
 /**
- * create-event-pass — Creates a Stripe Checkout Session for a one-time Event Pass (€29, 48h).
+ * create-event-pass — Creates a Stripe Checkout Session for a one-time Event Pass.
  *
  * POST body: { profileId: string }
  * Returns: { url: string } — the Stripe Checkout URL to redirect to
@@ -33,7 +33,29 @@ Deno.serve(async (req) => {
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    const supabase = createClient(
+    // ── Authenticate the user via JWT ──────────────────────────
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseAuth = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      { auth: { persistSession: false }, global: { headers: { Authorization: authHeader } } }
+    );
+    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
       { auth: { persistSession: false } }
@@ -48,17 +70,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch the profile
-    const { data: profile, error: profileError } = await supabase
+    // Fetch the profile — MUST belong to the authenticated user
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
-      .select("*")
+      .select("id, email, stripe_customer_id")
       .eq("id", profileId)
+      .eq("auth_user_id", user.id)
       .single();
 
     if (profileError || !profile) {
       return new Response(
-        JSON.stringify({ error: "Profile not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Profile not found or access denied" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -75,7 +98,7 @@ Deno.serve(async (req) => {
       });
       customerId = customer.id;
 
-      await supabase
+      await supabaseAdmin
         .from("profiles")
         .update({ stripe_customer_id: customerId })
         .eq("id", profileId);
@@ -113,7 +136,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("[EventPass] Error:", error);
     return new Response(
-      JSON.stringify({ error: error.message || "Internal server error" }),
+      JSON.stringify({ error: "Internal server error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

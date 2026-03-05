@@ -251,7 +251,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         data: { display_name: displayName || email.split('@')[0] },
       },
     });
-    if (error) return { error: error.message };
+    if (error) return { error: "Unable to create account. Please check your details and try again." };
 
     // The handle_new_user trigger creates the profile automatically.
     // Bridge anonymous data after signup confirmation.
@@ -260,7 +260,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
+    if (error) return { error: "Invalid email or password" };
 
     // After sign-in, try to bridge anonymous profile
     await bridgeAnonymousProfile();

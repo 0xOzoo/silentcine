@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import DOMPurify from "dompurify";
 import { supabase } from "@/integrations/supabase/client";
 import type { SubtitleTrack } from "@/hooks/useSession";
 
@@ -186,11 +187,10 @@ export default function SubtitleOverlay({ track, currentTime, isPlaying }: Subti
       <p
         className="text-sm leading-relaxed whitespace-pre-line"
         dangerouslySetInnerHTML={{
-          __html: activeCue
-            // Allow basic formatting tags
-            .replace(/<(?!\/?(b|i|u|em|strong)\b)[^>]+>/gi, "")
-            // Convert newlines to <br>
-            .replace(/\n/g, "<br>"),
+          __html: DOMPurify.sanitize(
+            activeCue.replace(/\n/g, "<br>"),
+            { ALLOWED_TAGS: ["b", "i", "u", "em", "strong", "br"], ALLOWED_ATTR: [] },
+          ),
         }}
       />
     </div>

@@ -18,7 +18,7 @@ const ALLOWED_TYPES = [
   "video/webm",
   "video/mkv",
   "video/x-matroska",
-  "application/octet-stream", // For unknown file types
+  // "application/octet-stream" removed — too permissive, allows arbitrary file masquerading
 ];
 
 // Database-based rate limiting (persistent across cold starts)
@@ -104,18 +104,13 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Validate file type (relaxed for video formats)
-      const fileType = file.type || "application/octet-stream";
+      // Validate file type — require BOTH a valid MIME type AND a valid extension
+      const fileType = file.type || "";
       const fileName = file.name.toLowerCase();
-      const isValidType = ALLOWED_TYPES.includes(fileType) || 
-        fileName.endsWith(".mp3") || 
-        fileName.endsWith(".mp4") || 
-        fileName.endsWith(".mkv") || 
-        fileName.endsWith(".webm") ||
-        fileName.endsWith(".wav") ||
-        fileName.endsWith(".ogg") ||
-        fileName.endsWith(".flac") ||
-        fileName.endsWith(".aac");
+      const validExtensions = [".mp3", ".mp4", ".mkv", ".webm", ".wav", ".ogg", ".flac", ".aac"];
+      const hasValidExtension = validExtensions.some(ext => fileName.endsWith(ext));
+      const hasValidMime = ALLOWED_TYPES.includes(fileType);
+      const isValidType = hasValidMime || hasValidExtension;
 
       if (!isValidType) {
         return new Response(

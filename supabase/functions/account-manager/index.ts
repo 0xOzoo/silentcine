@@ -91,6 +91,23 @@ Deno.serve(async (req) => {
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+      // Validate custom_branding_url is a safe HTTPS URL
+      if (updates.custom_branding_url !== undefined && updates.custom_branding_url !== null && updates.custom_branding_url !== "") {
+        try {
+          const brandUrl = new URL(updates.custom_branding_url as string);
+          if (brandUrl.protocol !== "https:") {
+            return new Response(
+              JSON.stringify({ error: "Custom branding URL must use HTTPS" }),
+              { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+        } catch {
+          return new Response(
+            JSON.stringify({ error: "Custom branding URL is not a valid URL" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
       if (updates.watermark_image_url !== undefined && profile.subscription_tier !== "enterprise") {
         return new Response(
           JSON.stringify({ error: "Logo watermark is an Enterprise feature" }),

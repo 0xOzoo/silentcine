@@ -33,9 +33,29 @@ Deno.serve(async (req) => {
       httpClient: Stripe.createFetchHttpClient(),
     });
 
-    // Authenticate the user
+    // ── Authenticate the user via JWT ──────────────────────────
     const authHeader = req.headers.get("authorization");
-    const supabase = createClient(
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseAuth = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      { auth: { persistSession: false }, global: { headers: { Authorization: authHeader } } }
+    );
+    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
       { auth: { persistSession: false } }
@@ -60,17 +80,18 @@ Deno.serve(async (req) => {
 
     const billingInterval = interval === "year" ? "year" : "month";
 
-    // Fetch the profile
-    const { data: profile, error: profileError } = await supabase
+    // Fetch the profile — MUST belong to the authenticated user
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
-      .select("*")
+      .select("id, email, stripe_customer_id")
       .eq("id", profileId)
+      .eq("auth_user_id", user.id)
       .single();
 
     if (profileError || !profile) {
       return new Response(
-        JSON.stringify({ error: "Profile not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Profile not found or access denied" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -88,15 +109,13 @@ Deno.serve(async (req) => {
       customerId = customer.id;
 
       // Store the customer ID
-      await supabase
+      await supabaseAdmin
         .from("profiles")
         .update({ stripe_customer_id: customerId })
         .eq("id", profileId);
     }
 
     // Map tier + interval to Stripe Price ID
-    // Monthly prices: STRIPE_PRICE_PRO, STRIPE_PRICE_ENTERPRISE
-    // Yearly prices:  STRIPE_PRICE_PRO_YEARLY, STRIPE_PRICE_ENTERPRISE_YEARLY
     let priceId: string | undefined;
     if (tier === "pro") {
       priceId = billingInterval === "year"
@@ -110,7 +129,7 @@ Deno.serve(async (req) => {
 
     if (!priceId) {
       return new Response(
-        JSON.stringify({ error: `Stripe Price ID not configured for tier: ${tier} (${billingInterval})` }),
+        JSON.stringify({ error: "Pricing not configured for this tier" }),
         { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -148,7 +167,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("[Checkout] Error:", error);
     return new Response(
-      JSON.stringify({ error: error.message || "Internal server error" }),
+      JSON.stringify({ error: "Internal server error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

@@ -88,7 +88,7 @@ const upload = multer({
 function requireApiKey(req, res, next) {
   const key = req.headers["x-api-key"];
   if (!key || key !== API_KEY) {
-    console.warn(`[Auth] Rejected: received key="${key ? key.slice(0, 8) + '...' : '(none)'}", expected="${API_KEY.slice(0, 8)}..."`);
+    console.warn("[Auth] Rejected: invalid or missing x-api-key");
     return res.status(401).json({ error: "Invalid or missing x-api-key" });
   }
   next();
@@ -1044,7 +1044,7 @@ app.post("/upload-subtitle", requireApiKey, upload.single("file"), async (req, r
 
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error("[Subtitle] Upload failed:", errorMsg);
-    return res.status(500).json({ error: errorMsg });
+    return res.status(500).json({ error: "Subtitle processing failed" });
   }
 });
 
@@ -1157,5 +1157,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`  Max concurrent extractions: ${MAX_CONCURRENT}`);
   console.log(`  Temp directory: ${TMP_DIR}`);
   console.log(`  Supabase: ${SUPABASE_URL}`);
-  console.log(`  API key: ${API_KEY.slice(0, 8)}...\n`);
+  console.log(`  API key: configured\n`);
 });
