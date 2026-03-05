@@ -4,7 +4,7 @@ import {
   Film, CreditCard, Settings, Trash2, Share2, Clock, AlertTriangle,
   CheckCircle, XCircle, Loader2, ArrowLeft, Pencil, KeyRound, Shield,
   Ticket, ExternalLink, Upload, Image as ImageIcon, Type, CalendarDays,
-  Play, Lock, Crown,
+  Play, Lock, Crown, Download,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -1259,11 +1259,26 @@ const SettingsTab = () => {
             placeholder="https://yourdomain.com/branding.css"
             disabled={!isEnterpriseUser}
           />
-          {isEnterpriseUser && (
-            <Button size="sm" onClick={handleSaveProfile} disabled={saving}>
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+          <p className="text-xs text-muted-foreground">
+            Host the CSS file on your own domain (HTTPS required). It will be loaded after the default theme, so your overrides take effect automatically.
+          </p>
+          <div className="flex items-center gap-2">
+            {isEnterpriseUser && (
+              <Button size="sm" onClick={handleSaveProfile} disabled={saving}>
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              asChild
+            >
+              <a href="/branding-template.css" download="branding-template.css">
+                <Download className="w-4 h-4 mr-1.5" />
+                Download Template
+              </a>
             </Button>
-          )}
+          </div>
         </CardContent>
       </Card>
 

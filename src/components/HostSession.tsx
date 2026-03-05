@@ -75,6 +75,9 @@ const HostSession = ({ onBack, movieId: existingMovieId }: HostSessionProps) => 
   /** Movie ID from extraction — used for subtitle uploads */
   const [currentMovieId, setCurrentMovieId] = useState<string | null>(null);
 
+  /** Guard: prevent the movie-from-library effect from running more than once */
+  const movieLoadedRef = useRef(false);
+
   // Create session on mount
   useEffect(() => {
     createSession();
@@ -83,6 +86,10 @@ const HostSession = ({ onBack, movieId: existingMovieId }: HostSessionProps) => 
   // Load existing movie from DB if movieId is provided (skip upload/extraction)
   useEffect(() => {
     if (!existingMovieId || !session) return;
+    // Only load once — session and updateAudioUrl change on every update,
+    // which would otherwise re-trigger this effect repeatedly.
+    if (movieLoadedRef.current) return;
+    movieLoadedRef.current = true;
 
     let cancelled = false;
     (async () => {

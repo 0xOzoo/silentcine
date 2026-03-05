@@ -1,0 +1,690 @@
+/*
+ * ============================================================================
+ * SilentCine — White-Label CSS Branding Template
+ * ============================================================================
+ *
+ * This file is a starting point for Enterprise customers who want to
+ * customise the look-and-feel of their SilentCine-powered screening app.
+ *
+ * HOW IT WORKS
+ * ------------
+ * 1. Copy this file and host it on any HTTPS URL you control.
+ * 2. In your Dashboard → Settings → Custom Branding CSS, paste the URL.
+ * 3. SilentCine loads your stylesheet AFTER the default theme, so anything
+ *    you declare here overrides the built-in styles.
+ *
+ * When white-label mode is active:
+ *   • The SilentCine header and footer are completely hidden.
+ *   • Watermark defaults to nothing (you choose your own via Settings).
+ *   • This stylesheet controls the entire visual identity.
+ *
+ * IMPORTANT NOTES
+ * ---------------
+ * - All colour values use the HSL channel format WITHOUT the `hsl()` wrapper.
+ *   Example:  --primary: 220 90% 56%;   (NOT hsl(220, 90%, 56%))
+ * - Gradients and box-shadows use full CSS values.
+ * - Font changes require @import or @font-face declarations at the top.
+ * - The `!important` flag is rarely needed; specificity is handled by load
+ *   order. Use it only if a value refuses to stick.
+ *
+ * ============================================================================
+ */
+
+
+/* ============================================================================
+ * 0. CUSTOM FONTS (optional)
+ * ============================================================================
+ * Uncomment and adjust if you want to replace the default fonts.
+ * - Body text uses `font-family: 'Inter', sans-serif`
+ * - Headings / display text use `font-family: 'Space Grotesk', sans-serif`
+ *   (Tailwind class: .font-display)
+ */
+
+/* @import url('https://fonts.googleapis.com/css2?family=YOUR+BODY+FONT:wght@300;400;500;600;700&family=YOUR+HEADING+FONT:wght@400;500;600;700&display=swap'); */
+
+/*
+body {
+  font-family: 'YOUR BODY FONT', sans-serif;
+}
+h1, h2, h3, h4, h5, h6,
+.font-display {
+  font-family: 'YOUR HEADING FONT', sans-serif;
+}
+*/
+
+
+/* ============================================================================
+ * 1. CORE COLOUR PALETTE
+ * ============================================================================
+ * These CSS custom properties control the entire colour scheme.
+ * Values are HSL channels: <hue> <saturation%> <lightness%>
+ *
+ * Override any combination — you don't need to override them all.
+ */
+
+:root {
+
+  /* --- Page background & text ------------------------------------------- */
+  /* --background: 240 10% 4%;       Dark near-black (default cinema look) */
+  /* --foreground: 40 20% 95%;       Off-white text                        */
+
+  /* --- Cards & surfaces ------------------------------------------------- */
+  /* --card: 240 10% 6%;             Slightly lighter than background      */
+  /* --card-foreground: 40 20% 95%;  Text on cards                         */
+
+  /* --- Popovers & dropdowns -------------------------------------------- */
+  /* --popover: 240 10% 6%;          Same as card by default               */
+  /* --popover-foreground: 40 20% 95%;                                     */
+
+  /* --- Brand / primary colour ------------------------------------------ */
+  /* This is the most impactful variable — it controls buttons, links,     */
+  /* focus rings, progress bars, badges, the hero CTA gradient, and more.  */
+  /* --primary: 38 92% 50%;          Amber / gold (SilentCine default)     */
+  /* --primary-foreground: 240 10% 4%;  Text ON the primary colour         */
+
+  /* --- Secondary surfaces ---------------------------------------------- */
+  /* Used for muted buttons, toggles, inactive tabs, input backgrounds.    */
+  /* --secondary: 240 8% 12%;                                              */
+  /* --secondary-foreground: 40 20% 90%;                                   */
+
+  /* --- Muted / disabled elements --------------------------------------- */
+  /* --muted: 240 8% 15%;            Background for muted/disabled areas   */
+  /* --muted-foreground: 240 5% 55%; Hint text, placeholders              */
+
+  /* --- Accent ---------------------------------------------------------- */
+  /* A secondary brand tint used for hover highlights and subtle accents.  */
+  /* --accent: 38 80% 45%;                                                 */
+  /* --accent-foreground: 240 10% 4%;                                      */
+
+  /* --- Destructive / danger -------------------------------------------- */
+  /* Error messages, delete buttons, warning badges.                       */
+  /* --destructive: 0 84% 60%;                                             */
+  /* --destructive-foreground: 210 40% 98%;                                */
+
+  /* --- Borders & inputs ------------------------------------------------ */
+  /* --border: 240 8% 18%;           Default border colour                 */
+  /* --input: 240 8% 18%;            Input field border                    */
+  /* --ring: 38 92% 50%;             Focus ring (matches primary)          */
+
+  /* --- Border radius --------------------------------------------------- */
+  /* --radius: 0.75rem;              Base radius for cards, buttons, etc.  */
+}
+
+
+/* ============================================================================
+ * 2. GLOW & EFFECTS
+ * ============================================================================
+ * SilentCine uses ambient glow effects throughout the UI. Override these
+ * to match your brand colour or remove them entirely.
+ */
+
+:root {
+  /* Glow tint colours (HSL channels, same format as above) */
+  /* --glow-primary: 38 92% 50%;     Primary glow hue                     */
+  /* --glow-secondary: 25 95% 53%;   Secondary glow hue (gradient end)    */
+
+  /* Cinema card gradient background */
+  /* --gradient-cinema: linear-gradient(135deg,
+       hsl(240 10% 6%) 0%,
+       hsl(240 10% 10%) 50%,
+       hsl(240 10% 6%) 100%
+     );
+  */
+
+  /* Brand gradient (used on headings, hero CTA buttons) */
+  /* --gradient-amber: linear-gradient(135deg,
+       hsl(38 92% 50%) 0%,
+       hsl(25 95% 53%) 100%
+     );
+  */
+
+  /* Radial ambient glow behind sections */
+  /* --gradient-radial: radial-gradient(
+       ellipse at center,
+       hsl(38 92% 50% / 0.15) 0%,
+       transparent 70%
+     );
+  */
+
+  /* Box shadows */
+  /* --shadow-glow: 0 0 60px -15px hsl(38 92% 50% / 0.4);  Glow shadow   */
+  /* --shadow-card: 0 25px 50px -12px hsl(0 0% 0% / 0.5);  Card shadow   */
+}
+
+
+/* ============================================================================
+ * 3. SIDEBAR (QR code panel in theater mode)
+ * ============================================================================
+ * The sidebar appears on the right side during a hosted screening session.
+ * It shows the QR code, room code, and audio status.
+ */
+
+:root {
+  /* --sidebar-background: 240 10% 6%;           */
+  /* --sidebar-foreground: 40 20% 95%;            */
+  /* --sidebar-primary: 38 92% 50%;               */
+  /* --sidebar-primary-foreground: 240 10% 4%;    */
+  /* --sidebar-accent: 240 8% 12%;                */
+  /* --sidebar-accent-foreground: 40 20% 90%;     */
+  /* --sidebar-border: 240 8% 18%;                */
+  /* --sidebar-ring: 38 92% 50%;                  */
+}
+
+
+/* ============================================================================
+ * 4. CUSTOM COMPONENT CLASSES
+ * ============================================================================
+ * These are SilentCine-specific CSS classes used across the UI.
+ */
+
+/* --- Cinema glow (box-shadow on featured elements) ---------------------- */
+/*
+.cinema-glow {
+  box-shadow: 0 0 60px -15px hsl(220 90% 56% / 0.4);
+}
+*/
+
+/* --- Cinema card (gradient background for cards, forms) ----------------- */
+/*
+.cinema-card {
+  background: linear-gradient(135deg,
+    hsl(220 15% 8%) 0%,
+    hsl(220 15% 12%) 50%,
+    hsl(220 15% 8%) 100%
+  );
+  box-shadow: 0 25px 50px -12px hsl(0 0% 0% / 0.5);
+}
+*/
+
+/* --- Text gradient (hero heading "Sound in Your Pocket") ---------------- */
+/*
+.text-gradient {
+  background: linear-gradient(135deg,
+    hsl(220 90% 56%) 0%,
+    hsl(200 95% 53%) 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+*/
+
+/* --- Ambient glow (radial backdrop behind hero section) ----------------- */
+/*
+.ambient-glow::before {
+  background: radial-gradient(
+    ellipse at center,
+    hsl(220 90% 56% / 0.15) 0%,
+    transparent 70%
+  );
+}
+*/
+
+
+/* ============================================================================
+ * 5. ANIMATIONS
+ * ============================================================================
+ * Override or disable the built-in animations.
+ */
+
+/* Slow pulse (used on various ambient elements) */
+/*
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+*/
+
+/* Floating animation (used on decorative elements) */
+/*
+.animate-float {
+  animation: none;
+}
+*/
+
+/* Pulse glow on live indicators (green dots, radio icons) */
+/*
+.animate-pulse-glow {
+  animation: none;
+}
+*/
+
+
+/* ============================================================================
+ * 6. BUTTON VARIANTS
+ * ============================================================================
+ * SilentCine uses shadcn/ui buttons with two custom variants.
+ * Standard variants (default, outline, ghost, secondary, destructive, link)
+ * respond to the CSS variables above. The custom ones can be overridden here.
+ */
+
+/* --- Hero CTA button (large gradient button on landing page) ------------ */
+/* Targets: Button variant="hero" */
+/*
+[class*="from-primary"][class*="to-glow-secondary"] {
+  background: linear-gradient(to right, hsl(220 90% 56%), hsl(200 95% 53%));
+}
+*/
+
+/* --- Cinema button (translucent surface button) ------------------------- */
+/* Targets: Button variant="cinema" */
+/*
+[class*="backdrop-blur-sm"][class*="border-border"] {
+  background: hsl(220 15% 12% / 0.5);
+  border-color: hsl(220 15% 20%);
+}
+*/
+
+
+/* ============================================================================
+ * 7. HERO SECTION
+ * ============================================================================
+ * The landing page hero — full-screen with background image, heading,
+ * subtitle, CTA buttons, and feature cards.
+ */
+
+/* Background overlay gradient (darkens the hero image) */
+/*
+section.relative > div:first-child > div {
+  background: linear-gradient(
+    to top,
+    hsl(var(--background)) 0%,
+    hsl(var(--background) / 0.8) 50%,
+    hsl(var(--background) / 0.4) 100%
+  );
+}
+*/
+
+/* Feature cards (3-column grid beneath the CTA) */
+/*
+.cinema-card.rounded-2xl {
+  border-color: hsl(var(--border));
+}
+*/
+
+
+/* ============================================================================
+ * 8. THEATER MODE (Host Session)
+ * ============================================================================
+ * The fullscreen video player view when hosting a screening.
+ */
+
+/* --- Theater background ------------------------------------------------- */
+/*
+div[class*="h-screen"][class*="w-screen"][class*="bg-black"] {
+  background: #000;
+}
+*/
+
+/* --- Video controls bar (bottom gradient overlay) ----------------------- */
+/*
+div[class*="from-black/80"][class*="to-transparent"] {
+  background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+}
+*/
+
+/* --- Progress bar in theater mode --------------------------------------- */
+/* The thin bar at the bottom showing playback position. */
+/* Track: bg-white/30, filled portion: bg-primary */
+
+/* --- QR sidebar (right panel, 320px) ----------------------------------- */
+/*
+div[class*="bg-black/95"][class*="backdrop-blur-sm"][class*="border-white/10"] {
+  background: rgba(0, 0, 0, 0.95);
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+*/
+
+/* --- Room code (large monospace text in sidebar) ------------------------ */
+/*
+p[style*="font-size:48px"] {
+  color: white;
+  letter-spacing: 0.3em;
+}
+*/
+
+/* --- QR code container -------------------------------------------------- */
+/*
+div[class*="bg-white"][class*="rounded-xl"] {
+  background: white;
+  padding: 1rem;
+  border-radius: 0.75rem;
+}
+*/
+
+/* --- Listener count badge (top centre of theater) ----------------------- */
+/* Contains coloured health dots: green (good), yellow (ok), red (bad) */
+
+
+/* ============================================================================
+ * 9. LISTENER VIEW (Audience Member)
+ * ============================================================================
+ * The mobile audio player that listeners see after scanning the QR code.
+ */
+
+/* --- Connect card (enter room code) ------------------------------------- */
+/* Uses .cinema-card for the main container */
+
+/* --- Room code input ---------------------------------------------------- */
+/*
+input[class*="tracking-widest"][class*="font-display"] {
+  background: hsl(var(--secondary));
+  border-color: hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+*/
+
+/* --- Now-playing orb (animated circle during playback) ------------------ */
+/*
+div[class*="w-32"][class*="h-32"][class*="rounded-full"][class*="cinema-glow"] {
+  background: linear-gradient(to bottom right,
+    hsl(var(--primary) / 0.2),
+    hsl(var(--glow-secondary) / 0.2)
+  );
+  border-color: hsl(var(--primary) / 0.3);
+}
+*/
+
+/* --- Mute button (large round play/pause) ------------------------------- */
+/*
+button[class*="w-20"][class*="h-20"][class*="rounded-full"] {
+  background: linear-gradient(to right,
+    hsl(var(--primary)),
+    hsl(var(--glow-secondary))
+  );
+}
+*/
+
+/* --- Sync status badges ------------------------------------------------- */
+/* Green = <100ms, Yellow = <300ms, Red = >300ms */
+/*
+span[class*="bg-green-500/10"] { background: hsl(142 70% 45% / 0.1); color: hsl(142 70% 45%); }
+span[class*="bg-yellow-500/10"] { background: hsl(45 93% 47% / 0.1); color: hsl(45 93% 47%); }
+span[class*="bg-red-500/10"] { background: hsl(0 84% 60% / 0.1); color: hsl(0 84% 60%); }
+*/
+
+/* --- Volume slider ------------------------------------------------------ */
+/* Track: bg-secondary, Range fill: bg-primary, Thumb: border-primary bg-background */
+
+/* --- Audio unlock overlay (mobile, "Tap to Enable Audio") --------------- */
+/*
+div[class*="fixed"][class*="bg-black/80"][class*="backdrop-blur-sm"] {
+  background: rgba(0, 0, 0, 0.8);
+}
+*/
+
+
+/* ============================================================================
+ * 10. DASHBOARD
+ * ============================================================================
+ * The member area with Movies, Billing, and Settings tabs.
+ */
+
+/* --- Tab navigation ----------------------------------------------------- */
+/* Active tab:  data-[state=active]:bg-background  data-[state=active]:shadow-sm */
+/* Override active tab styling: */
+/*
+[data-state="active"] {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+*/
+
+/* --- Movie cards -------------------------------------------------------- */
+/* Each movie is a Card with status badge, quality badge, action buttons */
+
+/* --- Stats grid (top of Movies tab) ------------------------------------ */
+/* 4-column grid of metric cards */
+
+/* --- Upgrade banner (shown to free-tier users) -------------------------- */
+/*
+div[class*="border-primary/30"][class*="bg-primary/5"] {
+  border-color: hsl(var(--primary) / 0.3);
+  background: hsl(var(--primary) / 0.05);
+}
+*/
+
+
+/* ============================================================================
+ * 11. PRICING PAGE
+ * ============================================================================
+ * Plan comparison cards with monthly/yearly toggle.
+ */
+
+/* --- Highlighted plan card (e.g. "Most Popular") ------------------------ */
+/*
+div[class*="border-primary"][class*="shadow-primary/10"] {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 10px 15px -3px hsl(var(--primary) / 0.1);
+}
+*/
+
+/* --- Billing toggle (month ↔ year switch) ------------------------------- */
+/*
+button[class*="rounded-full"][class*="bg-primary"] {
+  background: hsl(var(--primary));
+}
+*/
+
+/* --- "Save 20%" badge --------------------------------------------------- */
+/* Uses Badge variant=default → bg-primary text-primary-foreground */
+
+/* --- Feature check marks ------------------------------------------------ */
+/* Check icon: text-primary */
+
+
+/* ============================================================================
+ * 12. LOGIN / SIGNUP FORMS
+ * ============================================================================
+ * Auth forms use .cinema-card container with standard form inputs.
+ */
+
+/* --- Google OAuth button ------------------------------------------------ */
+/* Button variant="outline" with full width */
+
+/* --- "or" separator ----------------------------------------------------- */
+/* Separator component with centered text */
+
+/* --- Password strength rules (signup only) ------------------------------ */
+/* Green (passed): text-green-400, Grey (pending): text-muted-foreground */
+
+
+/* ============================================================================
+ * 13. TIER BADGES
+ * ============================================================================
+ * Small coloured badges showing the user's subscription tier.
+ * Each tier has its own colour scheme.
+ */
+
+/* Free:       bg-muted text-muted-foreground border-muted             */
+/* Event:      bg-blue-500/15 text-blue-400 border-blue-500/30         */
+/* Pro:        bg-amber-500/15 text-amber-400 border-amber-500/30      */
+/* Enterprise: bg-purple-500/15 text-purple-400 border-purple-500/30   */
+
+/* Example: rebrand Enterprise badge to your colour */
+/*
+span[class*="bg-purple-500/15"] {
+  background: hsl(220 90% 56% / 0.15);
+  color: hsl(220 90% 70%);
+  border-color: hsl(220 90% 56% / 0.3);
+}
+*/
+
+
+/* ============================================================================
+ * 14. SUBTITLE OVERLAY (Theater mode)
+ * ============================================================================
+ * Subtitle text displayed over the video during playback.
+ */
+
+/*
+div[class*="bg-black/85"][class*="backdrop-blur-sm"] {
+  background: rgba(0, 0, 0, 0.85);
+  color: white;
+  font-size: 0.875rem;
+  border-radius: 0.5rem;
+}
+*/
+
+
+/* ============================================================================
+ * 15. RETENTION BANNER
+ * ============================================================================
+ * Warning banner shown when a movie is approaching its retention deadline.
+ */
+
+/*
+div[class*="border-yellow-500/30"][class*="bg-yellow-500/10"] {
+  border-color: hsl(45 93% 47% / 0.3);
+  background: hsl(45 93% 47% / 0.1);
+}
+*/
+
+
+/* ============================================================================
+ * 16. MODALS & OVERLAYS
+ * ============================================================================
+ * Dialogs, alert dialogs, track selector, sync calibration, QR scanner.
+ * All use Radix UI with these data attributes for targeting:
+ *   data-[state=open]   — element is visible
+ *   data-[state=closed] — element is closing
+ */
+
+/* --- Modal backdrop ----------------------------------------------------- */
+/*
+[data-state="open"][class*="bg-black/80"] {
+  background: rgba(0, 0, 0, 0.8);
+}
+*/
+
+/* --- Modal content panel ------------------------------------------------ */
+/* Uses bg-card border-border rounded-2xl */
+
+
+/* ============================================================================
+ * 17. SCROLLBARS (optional)
+ * ============================================================================
+ * Style the browser scrollbar to match your brand.
+ */
+
+/*
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+*/
+
+
+/* ============================================================================
+ * EXAMPLE: BLUE BRAND THEME
+ * ============================================================================
+ * Uncomment this block to see a complete blue-themed override.
+ * It replaces the default amber/gold with a blue brand identity.
+ */
+
+/*
+:root {
+  --primary: 220 90% 56%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 220 80% 45%;
+  --accent-foreground: 0 0% 100%;
+  --ring: 220 90% 56%;
+  --glow-primary: 220 90% 56%;
+  --glow-secondary: 200 95% 53%;
+  --gradient-amber: linear-gradient(135deg, hsl(220 90% 56%) 0%, hsl(200 95% 53%) 100%);
+  --gradient-radial: radial-gradient(ellipse at center, hsl(220 90% 56% / 0.15) 0%, transparent 70%);
+  --shadow-glow: 0 0 60px -15px hsl(220 90% 56% / 0.4);
+}
+
+.cinema-glow {
+  box-shadow: 0 0 60px -15px hsl(220 90% 56% / 0.4);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, hsl(220 90% 56%) 0%, hsl(200 95% 53%) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+*/
+
+
+/* ============================================================================
+ * EXAMPLE: LIGHT THEME
+ * ============================================================================
+ * Uncomment this block for a light-background experience.
+ * Note: some theater-mode elements use hardcoded bg-black which won't change;
+ * those are intentional (the video player should always be dark).
+ */
+
+/*
+:root {
+  --background: 0 0% 98%;
+  --foreground: 240 10% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 10%;
+  --secondary: 240 5% 92%;
+  --secondary-foreground: 240 10% 20%;
+  --muted: 240 5% 94%;
+  --muted-foreground: 240 5% 45%;
+  --border: 240 5% 85%;
+  --input: 240 5% 85%;
+  --gradient-cinema: linear-gradient(135deg, hsl(0 0% 100%) 0%, hsl(240 5% 96%) 50%, hsl(0 0% 100%) 100%);
+  --shadow-card: 0 25px 50px -12px hsl(0 0% 0% / 0.1);
+}
+
+body {
+  -webkit-font-smoothing: auto;
+}
+
+.cinema-card {
+  background: linear-gradient(135deg, hsl(0 0% 100%) 0%, hsl(240 5% 97%) 50%, hsl(0 0% 100%) 100%);
+  box-shadow: 0 25px 50px -12px hsl(0 0% 0% / 0.1);
+}
+*/
+
+
+/* ============================================================================
+ * EXAMPLE: REMOVE ALL GLOW EFFECTS
+ * ============================================================================
+ * For a cleaner, flatter look.
+ */
+
+/*
+:root {
+  --shadow-glow: none;
+  --gradient-radial: none;
+}
+
+.cinema-glow {
+  box-shadow: none;
+}
+
+.ambient-glow::before {
+  display: none;
+}
+
+.animate-pulse-glow {
+  animation: none;
+}
+*/
+
+
+/* ============================================================================
+ * END OF TEMPLATE
+ * ============================================================================
+ * Questions? Refer to the SilentCine Enterprise documentation or contact
+ * support for help customising your screening experience.
+ * ============================================================================
+ */
