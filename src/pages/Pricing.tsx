@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import { TIER_LIMITS, type SubscriptionTier } from '@/types/profile';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
@@ -212,12 +213,15 @@ const Pricing = () => {
         return;
       }
 
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token ?? ANON_KEY;
+
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'apikey': ANON_KEY,
-          'Authorization': `Bearer ${ANON_KEY}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(body),
       });
@@ -242,164 +246,183 @@ const Pricing = () => {
   };
 
   return (
-    <div className="min-h-screen py-10 px-4">
+    <div className="py-8 px-4">
       <div className="container max-w-6xl mx-auto">
-        <Button variant="ghost" asChild className="mb-8">
-          <Link to="/"><ArrowLeft className="w-4 h-4 mr-2" />Back</Link>
-        </Button>
 
-        <div className="text-center mb-12">
-          <h1 className="font-display text-3xl font-bold mb-3">Choose Your Plan</h1>
-          <p className="text-muted-foreground max-w-md mx-auto">
+        {/* Back */}
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-6"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </Link>
+
+        {/* Header — centered like the original */}
+        <div className="text-center mb-8">
+          <p className="text-[11px] font-semibold tracking-[0.25em] uppercase text-primary mb-3">Pricing</p>
+          <h1 className="font-display text-3xl font-bold tracking-tight mb-2">Plans for every screening.</h1>
+          <p className="text-muted-foreground text-sm max-w-md mx-auto">
             From small gatherings to large venues. Pick the plan that fits your silent cinema needs.
           </p>
           {currency.code !== 'EUR' && (
-            <p className="text-xs text-muted-foreground mt-2">
-              Prices shown in {currency.code} (approximate). You will be charged in EUR at checkout.
+            <p className="text-xs text-muted-foreground mt-1">
+              Shown in {currency.code} (approx). Charged in EUR at checkout.
             </p>
           )}
 
-          {/* Billing interval toggle */}
-          <div className="flex items-center justify-center mt-6">
-            {/* Invisible counterweight to keep toggle centered */}
-            <Badge variant="default" className="text-xs mr-1 opacity-0 pointer-events-none">Save 20%</Badge>
-            <div className="flex items-center gap-3">
-              <span className={`text-sm font-medium transition-colors ${billingInterval === 'month' ? 'text-foreground' : 'text-muted-foreground'}`}>
-                Monthly
-              </span>
+          {/* Billing toggle — centered */}
+          <div className="flex items-center justify-center mt-5">
+            <div className="flex items-center gap-1 border border-border/40 rounded-lg p-1">
               <button
-                onClick={() => setBillingInterval(prev => prev === 'month' ? 'year' : 'month')}
-                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                  billingInterval === 'year' ? 'bg-primary' : 'bg-muted'
+                onClick={() => setBillingInterval('month')}
+                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  billingInterval === 'month'
+                    ? 'bg-secondary text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
                 }`}
-                aria-label="Toggle billing interval"
               >
-                <span
-                  className={`inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                    billingInterval === 'year' ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
+                Monthly
               </button>
-              <span className={`text-sm font-medium transition-colors ${billingInterval === 'year' ? 'text-foreground' : 'text-muted-foreground'}`}>
+              <button
+                onClick={() => setBillingInterval('year')}
+                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors inline-flex items-center gap-1.5 ${
+                  billingInterval === 'year'
+                    ? 'bg-secondary text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
                 Yearly
-              </span>
+                <span className="text-[10px] font-semibold text-primary">−20%</span>
+              </button>
             </div>
-            <Badge variant="default" className={`text-xs ml-1 transition-opacity ${billingInterval === 'year' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>Save 20%</Badge>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {/* Plans grid — natural height, no stretching */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {plans.map((plan) => {
             const isCurrent = plan.tier === currentTier;
             const isLoading = loadingTier === plan.ctaAction;
 
-            // Determine displayed price based on billing interval
-            const isYearly = billingInterval === 'year' && plan.isSubscription && plan.yearlyPriceEur;
+            const isYearly = billingInterval === 'year' && plan.isSubscription && !!plan.yearlyPriceEur;
             const priceEur = isYearly ? plan.yearlyPriceEur! : plan.monthlyPriceEur;
-            const periodLabel = plan.isSubscription
-              ? (isYearly ? '/year' : '/month')
-              : plan.period;
+            const periodLabel = plan.isSubscription ? (isYearly ? '/yr' : '/mo') : plan.period;
             const displayPrice = formatPrice(priceEur, currency);
 
-            // Old/strikethrough price (launch promo): only for monthly
-            const displayOldPrice = (!isYearly && plan.oldMonthlyPriceEur)
-              ? formatPrice(plan.oldMonthlyPriceEur, currency)
-              : null;
+            // Strikethrough: monthly uses oldMonthlyPriceEur, yearly uses oldMonthlyPriceEur × 12
+            const oldYearlyPriceEur = plan.oldMonthlyPriceEur ? plan.oldMonthlyPriceEur * 12 : null;
+            const displayOldPrice = isYearly
+              ? (oldYearlyPriceEur ? formatPrice(oldYearlyPriceEur, currency) : null)
+              : (plan.oldMonthlyPriceEur ? formatPrice(plan.oldMonthlyPriceEur, currency) : null);
+            const discountPct = isYearly && oldYearlyPriceEur && plan.yearlyPriceEur
+              ? Math.round((1 - plan.yearlyPriceEur / oldYearlyPriceEur) * 100)
+              : (!isYearly && plan.oldMonthlyPriceEur)
+                ? Math.round((1 - plan.monthlyPriceEur / plan.oldMonthlyPriceEur) * 100)
+                : null;
 
-            // For yearly subscription plans, show the monthly equivalent
-            const monthlyEquivalent = isYearly
-              ? formatPrice(plan.yearlyPriceEur! / 12, currency)
-              : null;
+            const monthlyEquivalent = isYearly ? formatPrice(plan.yearlyPriceEur! / 12, currency) : null;
+
+            // Per-plan accent colours
+            const isPromo = !!plan.promoBadge && !plan.highlight;
+            const accentLine  = plan.highlight ? 'bg-primary'          : isPromo ? 'bg-purple-500'      : '';
+            const cardBorder  = plan.highlight ? 'border-primary/50 bg-primary/[0.03] shadow-lg shadow-primary/10'
+                                               : isPromo ? 'border-purple-500/40 shadow-md shadow-purple-500/10'
+                                               : 'border-border/40';
+            const labelColor  = plan.highlight ? 'text-primary'        : isPromo ? 'text-purple-400'    : '';
+            const discColor   = plan.highlight || !isPromo ? 'text-primary' : 'text-purple-400';
 
             return (
-              <Card
+              <div
                 key={plan.tier}
-                className={`relative flex flex-col ${
-                  plan.highlight
-                    ? 'border-primary shadow-lg shadow-primary/10'
-                    : plan.promoBadge
-                      ? 'border-purple-500/50 shadow-md shadow-purple-500/10'
-                      : 'border-border'
-                }`}
+                className={`relative flex flex-col rounded-xl border p-4 overflow-hidden ${cardBorder}`}
               >
-                {plan.highlight && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                    <Badge variant="default" className="text-xs">Most Popular</Badge>
-                  </div>
-                )}
-                {plan.promoBadge && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-                    <Badge className="text-xs bg-purple-600 hover:bg-purple-700 text-white">{plan.promoBadge}</Badge>
-                  </div>
+                {/* Top accent line */}
+                {(plan.highlight || isPromo) && (
+                  <div className={`absolute top-0 left-0 right-0 h-[2px] ${accentLine}`} />
                 )}
 
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    {plan.icon}
-                    <CardTitle className="text-lg">{plan.name}</CardTitle>
-                  </div>
-                  <CardDescription>{plan.description}</CardDescription>
-                </CardHeader>
+                {/* Plan label + name */}
+                <div className="mb-3">
+                  {plan.highlight && (
+                    <p className={`text-[10px] font-semibold tracking-[0.2em] uppercase mb-1 ${labelColor}`}>Most Popular</p>
+                  )}
+                  {plan.promoBadge && (
+                    <p className={`text-[10px] font-semibold tracking-[0.2em] uppercase mb-1 ${labelColor}`}>Launch Sale</p>
+                  )}
+                  <h3 className="font-display font-bold text-base leading-tight">{plan.name}</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{plan.description}</p>
+                </div>
 
-                <CardContent className="flex-1">
-                  <div className="mb-6">
-                    {displayOldPrice && (
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-lg text-muted-foreground line-through">{displayOldPrice}</span>
-                        <Badge variant="outline" className="text-xs text-purple-400 border-purple-400/30">-30%</Badge>
-                      </div>
-                    )}
-                    <span className="text-3xl font-bold">{displayPrice}</span>
+                {/* Price */}
+                <div className="mb-4">
+                  {displayOldPrice && (
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-xs text-muted-foreground line-through">
+                        {displayOldPrice}{isYearly ? '/yr' : '/mo'}
+                      </span>
+                      {discountPct && (
+                        <span className={`text-[10px] font-semibold ${discColor}`}>−{discountPct}%</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-end gap-1">
+                    <span className="text-2xl font-bold tracking-tight">{displayPrice}</span>
                     {priceEur !== 0 && (
-                      <span className="text-muted-foreground text-sm ml-1">{periodLabel}</span>
-                    )}
-                    {monthlyEquivalent && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {monthlyEquivalent}/mo equivalent
-                      </p>
+                      <span className="text-xs text-muted-foreground mb-0.5">{periodLabel}</span>
                     )}
                   </div>
+                  {monthlyEquivalent && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{monthlyEquivalent}/mo equiv.</p>
+                  )}
+                </div>
 
-                  <ul className="space-y-2.5">
-                    {plan.features.map((feature, i) => (
-                      <li key={i} className="flex items-start gap-2 text-sm">
-                        <Check className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                        <span>{feature}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
+                {/* Features */}
+                <ul className="flex-1 space-y-1.5 mb-4">
+                  {plan.features.map((feature, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-xs">
+                      <Check className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${isPromo ? 'text-purple-400' : 'text-primary'}`} />
+                      <span className="text-foreground/80 leading-snug">{feature}</span>
+                    </li>
+                  ))}
+                </ul>
 
-                <CardFooter className="pt-4">
-                  <Button
-                    className={`w-full ${plan.promoBadge ? 'bg-purple-600 hover:bg-purple-700 text-white' : ''}`}
-                    variant={plan.highlight ? 'default' : plan.promoBadge ? 'default' : 'outline'}
-                    disabled={isCurrent || isLoading}
-                    onClick={() => handleCheckout(plan.ctaAction)}
-                  >
-                    {isLoading ? (
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current" />
-                    ) : isCurrent ? (
-                      'Current Plan'
-                    ) : (
-                      plan.ctaLabel
-                    )}
-                  </Button>
-                </CardFooter>
-              </Card>
+                {/* CTA */}
+                <button
+                  disabled={isCurrent || !!isLoading}
+                  onClick={() => handleCheckout(plan.ctaAction)}
+                  className={`w-full py-2.5 rounded-lg text-sm font-semibold transition-all disabled:opacity-60 ${
+                    isCurrent
+                      ? 'border border-border/40 text-muted-foreground cursor-default'
+                      : plan.highlight
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]'
+                        : isPromo
+                          ? 'bg-purple-600 hover:bg-purple-700 text-white active:scale-[0.98]'
+                          : 'border border-border/60 text-foreground hover:border-foreground/40 active:scale-[0.98]'
+                  }`}
+                >
+                  {isLoading ? (
+                    <div className="mx-auto animate-spin rounded-full h-4 w-4 border-b-2 border-current" />
+                  ) : isCurrent ? (
+                    'Current Plan'
+                  ) : (
+                    plan.ctaLabel
+                  )}
+                </button>
+              </div>
             );
           })}
         </div>
 
-        <div className="text-center mt-12 text-sm text-muted-foreground">
-          <p>All plans include audio sync, subtitle support, and QR code session sharing.</p>
-          <p className="mt-1">
-            Questions? Check our{' '}
-            <Link to="/terms" className="text-primary hover:underline">Terms</Link>{' '}
-            and{' '}
-            <Link to="/refund" className="text-primary hover:underline">Refund Policy</Link>.
+        {/* Footer */}
+        <div className="mt-8 flex items-center justify-between text-xs text-muted-foreground">
+          <p>All plans include audio sync, subtitle support, and QR code sharing.</p>
+          <p className="shrink-0 ml-4">
+            <Link to="/terms" className="hover:text-foreground transition-colors">Terms</Link>
+            {' · '}
+            <Link to="/refund" className="hover:text-foreground transition-colors">Refund Policy</Link>
           </p>
         </div>
+
       </div>
     </div>
   );

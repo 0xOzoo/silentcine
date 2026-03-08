@@ -75,7 +75,7 @@ const HeroSection = ({ onHostClick, onListenClick }: HeroSectionProps) => {
               {/* Primary: flat amber rectangle, no gradient, no rounded-full */}
               <button
                 onClick={onHostClick}
-                className="group flex items-center gap-3 bg-primary text-primary-foreground px-7 py-4 rounded-lg text-sm font-semibold tracking-wide transition-all duration-200 hover:bg-primary/90 active:scale-[0.98]"
+                className="group flex items-center gap-3 bg-primary text-primary-foreground px-7 py-4 rounded-lg text-sm font-semibold tracking-wide shadow-lg shadow-primary/30 transition-all duration-200 hover:bg-primary/90 hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
               >
                 Host a Screening
                 <ArrowRight className="w-4 h-4 transition-transform duration-200 group-hover:translate-x-0.5" />
