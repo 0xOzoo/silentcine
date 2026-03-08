@@ -157,58 +157,69 @@ const Dashboard = () => {
   }, []);
 
   return (
-    <div className="min-h-screen py-8 px-4">
+    <div className="py-10 px-4">
       <div className="container max-w-5xl mx-auto">
-        <Button variant="ghost" asChild className="mb-6">
-          <Link to="/"><ArrowLeft className="w-4 h-4 mr-2" />Home</Link>
-        </Button>
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-10"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Home
+        </Link>
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-end justify-between border-b border-border/30 pb-6 mb-8">
           <div>
-            <h1 className="font-display text-2xl font-bold">Dashboard</h1>
-            <p className="text-muted-foreground text-sm mt-1">
-              Manage your movies, billing, and account settings.
+            <p className="text-[11px] font-semibold tracking-[0.25em] uppercase text-primary mb-2">
+              Dashboard
             </p>
+            <h1 className="font-display text-3xl font-bold tracking-tight">Your Films</h1>
           </div>
           <TierBadge tier={tier} />
         </div>
 
-        {/* Free user upgrade banner */}
+        {/* Free user upgrade notice */}
         {isFree && (
-          <Card className="mb-6 border-primary/30 bg-primary/5">
-            <CardContent className="flex items-center justify-between py-4">
-              <div>
-                <p className="font-medium text-sm">Upgrade to keep your movies permanently</p>
-                <p className="text-muted-foreground text-xs mt-0.5">
-                  Free tier movies expire in 7 days. Upgrade to Pro for permanent storage.
-                </p>
-              </div>
-              <Button size="sm" asChild>
-                <Link to="/pricing">Upgrade</Link>
-              </Button>
-            </CardContent>
-          </Card>
+          <div className="flex items-center justify-between border-l-2 border-primary/60 pl-4 py-1.5 mb-8">
+            <div>
+              <p className="text-sm font-medium">Films expire in 7 days on Free</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Upgrade to Pro for permanent storage.
+              </p>
+            </div>
+            <Link
+              to="/pricing"
+              className="text-xs text-primary underline underline-offset-4 hover:text-primary/80 transition-colors shrink-0 ml-4"
+            >
+              Upgrade
+            </Link>
+          </div>
         )}
 
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setTab}>
-          <TabsList className="mb-6">
-            <TabsTrigger value="movies" className="gap-1.5">
-              <Film className="w-4 h-4" />Movies
-            </TabsTrigger>
-            <TabsTrigger value="billing" className="gap-1.5">
-              <CreditCard className="w-4 h-4" />Billing
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="gap-1.5">
-              <Settings className="w-4 h-4" />Settings
-            </TabsTrigger>
-          </TabsList>
+        {/* Tab navigation */}
+        <nav className="flex items-center gap-8 border-b border-border/30 mb-8">
+          {[
+            { value: 'movies',   label: 'Films'    },
+            { value: 'billing',  label: 'Billing'  },
+            { value: 'settings', label: 'Settings' },
+          ].map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => setTab(value)}
+              className={`pb-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                activeTab === value
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
 
-          <TabsContent value="movies"><MoviesTab /></TabsContent>
-          <TabsContent value="billing"><BillingTab /></TabsContent>
-          <TabsContent value="settings"><SettingsTab /></TabsContent>
-        </Tabs>
+        {/* Tab content */}
+        {activeTab === 'movies'   && <MoviesTab />}
+        {activeTab === 'billing'  && <BillingTab />}
+        {activeTab === 'settings' && <SettingsTab />}
       </div>
     </div>
   );
@@ -307,22 +318,18 @@ const MoviesTab = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <Card className="border-destructive/30">
-        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-          <AlertTriangle className="w-8 h-8 text-destructive mb-3" />
-          <h3 className="font-medium mb-1">Failed to load movies</h3>
-          <p className="text-muted-foreground text-sm mb-4">{error}</p>
-          <Button variant="outline" size="sm" onClick={fetchMovies}>Retry</Button>
-        </CardContent>
-      </Card>
+      <div className="py-12 text-center">
+        <p className="text-sm text-muted-foreground mb-4">{error}</p>
+        <button onClick={fetchMovies} className="text-xs text-primary underline underline-offset-4">Retry</button>
+      </div>
     );
   }
 
@@ -331,43 +338,11 @@ const MoviesTab = () => {
 
   if (movies.length === 0) {
     return (
-      <Card className="border-dashed">
-        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-          <Film className="w-10 h-10 text-muted-foreground mb-3" />
-          <h3 className="font-medium mb-1">No movies yet</h3>
-          <p className="text-muted-foreground text-sm max-w-xs mb-4">
-            Upload a video to get started. Audio will be extracted automatically.
-          </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="video/*,.mkv,.avi,.mov,.webm,.mp4,.m4v,.mpeg,.mpg"
-            className="hidden"
-            onChange={handleUploadFile}
-            disabled={uploading}
-          />
-          <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-            {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-            {uploading ? 'Processing...' : 'Upload a Video'}
-          </Button>
-          {uploading && extractionProgress && (
-            <div className="w-full max-w-xs mt-4 space-y-1">
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>{extractionProgress.message}</span>
-                <span>{extractionProgress.percent}%</span>
-              </div>
-              <Progress value={extractionProgress.percent} className="h-2" />
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Upload button + progress */}
-      <div className="flex items-center justify-end gap-3">
+      <div className="py-20 text-center">
+        <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-4">No Films Yet</p>
+        <p className="text-sm text-muted-foreground max-w-xs mx-auto mb-8">
+          Upload a video to get started. Audio is extracted automatically.
+        </p>
         <input
           ref={fileInputRef}
           type="file"
@@ -376,155 +351,186 @@ const MoviesTab = () => {
           onChange={handleUploadFile}
           disabled={uploading}
         />
-        <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-          {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-          {uploading ? 'Processing...' : 'Upload Movie'}
-        </Button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-3 rounded-lg text-sm font-semibold transition-all hover:bg-primary/90 active:scale-[0.98] disabled:opacity-60"
+        >
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          {uploading ? 'Processing...' : 'Upload a Video'}
+        </button>
+        {uploading && extractionProgress && (
+          <div className="w-full max-w-xs mt-6 mx-auto space-y-1.5">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>{extractionProgress.message}</span>
+              <span>{extractionProgress.percent}%</span>
+            </div>
+            <Progress value={extractionProgress.percent} className="h-1" />
+          </div>
+        )}
       </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Header row: stats strip + upload button */}
+      <div className="flex items-center justify-between pb-5 border-b border-border/30">
+        <div className="flex items-center gap-5 text-xs text-muted-foreground">
+          <span>
+            <span className="text-foreground font-semibold text-base mr-1.5">{activeMovies.length}</span>active
+          </span>
+          <span className="text-border/60">·</span>
+          <span>
+            <span className="text-foreground font-semibold text-base mr-1.5">{archivedMovies.length}</span>archived
+          </span>
+          <span className="text-border/60">·</span>
+          <span>
+            <span className="text-foreground font-semibold text-base mr-1.5">
+              {movies.reduce((sum, m) => sum + (m.audio_tracks?.length ?? 0), 0)}
+            </span>tracks
+          </span>
+        </div>
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*,.mkv,.avi,.mov,.webm,.mp4,.m4v,.mpeg,.mpg"
+            className="hidden"
+            onChange={handleUploadFile}
+            disabled={uploading}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-semibold transition-all hover:bg-primary/90 active:scale-[0.98] disabled:opacity-60"
+          >
+            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+            {uploading ? 'Processing...' : 'Upload'}
+          </button>
+        </div>
+      </div>
+
+      {/* Upload progress */}
       {uploading && extractionProgress && (
-        <div className="space-y-1">
+        <div className="py-4 space-y-1.5 border-b border-border/30">
           <div className="flex justify-between text-xs text-muted-foreground">
             <span>{extractionProgress.message}</span>
             <span>{extractionProgress.percent}%</span>
           </div>
-          <Progress value={extractionProgress.percent} className="h-2" />
+          <Progress value={extractionProgress.percent} className="h-1" />
         </div>
       )}
       {uploadError && (
-        <p className="text-xs text-destructive">{uploadError}</p>
+        <p className="text-xs text-destructive py-3 border-b border-border/30">{uploadError}</p>
       )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-2">
-        <Card><CardContent className="py-3 px-4">
-          <p className="text-xs text-muted-foreground">Active</p>
-          <p className="text-xl font-bold">{activeMovies.length}</p>
-        </CardContent></Card>
-        <Card><CardContent className="py-3 px-4">
-          <p className="text-xs text-muted-foreground">Archived</p>
-          <p className="text-xl font-bold">{archivedMovies.length}</p>
-        </CardContent></Card>
-        <Card><CardContent className="py-3 px-4">
-          <p className="text-xs text-muted-foreground">Audio Tracks</p>
-          <p className="text-xl font-bold">{movies.reduce((sum, m) => sum + (m.audio_tracks?.length ?? 0), 0)}</p>
-        </CardContent></Card>
-        <Card><CardContent className="py-3 px-4">
-          <p className="text-xs text-muted-foreground">Subtitles</p>
-          <p className="text-xl font-bold">{movies.reduce((sum, m) => sum + (m.subtitle_tracks?.length ?? 0), 0)}</p>
-        </CardContent></Card>
-      </div>
-
-      {/* Movie list */}
+      {/* Active movies */}
       {activeMovies.map(movie => {
         const statusCfg = STATUS_CONFIG[movie.status] || STATUS_CONFIG.error;
         const retention = getRetentionRemaining(movie.created_at, movie.retention_policy);
 
         return (
-          <Card key={movie.id} className="border-border">
-            <CardContent className="py-4 px-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-medium truncate">{movie.title || 'Untitled'}</h3>
-                    <span className={`flex items-center gap-1 text-xs ${statusCfg.className}`}>
-                      {statusCfg.icon} {statusCfg.label}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                    <span>{formatDate(movie.created_at)}</span>
-                    <Badge variant="outline" className="text-[10px]">{movie.quality_profile}</Badge>
-                    {retention && (
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {retention}
-                      </span>
-                    )}
-                    {movie.audio_tracks?.length > 0 && (
-                      <span>{movie.audio_tracks.length} audio track{movie.audio_tracks.length > 1 ? 's' : ''}</span>
-                    )}
-                    {movie.subtitle_tracks?.length > 0 && (
-                      <span>{movie.subtitle_tracks.length} subtitle{movie.subtitle_tracks.length > 1 ? 's' : ''}</span>
-                    )}
-                  </div>
-                  {movie.processing_error && (
-                    <p className="text-xs text-red-400 mt-1 truncate">{movie.processing_error}</p>
-                  )}
-                  {movie.retention_policy !== 'permanent' && (
-                    <div className="mt-2">
-                      <RetentionBanner
-                        createdAt={movie.created_at}
-                        retentionPolicy={movie.retention_policy as 'permanent' | '7_days' | '30_days'}
-                        warningDays={3}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1 shrink-0">
-                  {movie.status === 'ready' && (
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-primary hover:text-primary" onClick={() => handleHost(movie.id)} title="Host this movie">
-                      <Play className="w-4 h-4" />
-                    </Button>
-                  )}
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleShare(movie)}>
-                    <Share2 className="w-4 h-4" />
-                  </Button>
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive">
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Delete "{movie.title || 'Untitled'}"?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will permanently delete the video, audio, and subtitle files from storage. This cannot be undone.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => handleDelete(movie.id)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                          Delete
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                </div>
+          <div key={movie.id} className="flex items-start justify-between gap-4 py-4 border-b border-border/30">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 mb-1">
+                <h3 className="font-semibold text-sm truncate">{movie.title || 'Untitled'}</h3>
+                <span className={`flex items-center gap-1 text-[11px] ${statusCfg.className}`}>
+                  {statusCfg.icon} {statusCfg.label}
+                </span>
               </div>
-            </CardContent>
-          </Card>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
+                <span>{formatDate(movie.created_at)}</span>
+                <span className="uppercase tracking-wide text-[10px]">{movie.quality_profile}</span>
+                {retention && (
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" />{retention}
+                  </span>
+                )}
+                {movie.audio_tracks?.length > 0 && (
+                  <span>{movie.audio_tracks.length} audio{movie.audio_tracks.length > 1 ? ' tracks' : ' track'}</span>
+                )}
+                {movie.subtitle_tracks?.length > 0 && (
+                  <span>{movie.subtitle_tracks.length} subtitle{movie.subtitle_tracks.length > 1 ? 's' : ''}</span>
+                )}
+              </div>
+              {movie.processing_error && (
+                <p className="text-[11px] text-red-400 mt-1 truncate">{movie.processing_error}</p>
+              )}
+              {movie.retention_policy !== 'permanent' && (
+                <div className="mt-2">
+                  <RetentionBanner
+                    createdAt={movie.created_at}
+                    retentionPolicy={movie.retention_policy as 'permanent' | '7_days' | '30_days'}
+                    warningDays={3}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-0.5 shrink-0">
+              {movie.status === 'ready' && (
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-primary hover:text-primary" onClick={() => handleHost(movie.id)} title="Host this movie">
+                  <Play className="w-4 h-4" />
+                </Button>
+              )}
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleShare(movie)}>
+                <Share2 className="w-4 h-4" />
+              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive">
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete "{movie.title || 'Untitled'}"?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete the video, audio, and subtitle files from storage. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => handleDelete(movie.id)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          </div>
         );
       })}
 
+      {/* Archived movies */}
       {archivedMovies.length > 0 && (
         <>
-          <Separator className="my-4" />
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">Archived ({archivedMovies.length})</h3>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-muted-foreground pt-6 pb-3">
+            Archived ({archivedMovies.length})
+          </p>
           {archivedMovies.map(movie => (
-            <Card key={movie.id} className="border-border opacity-60">
-              <CardContent className="py-3 px-5 flex items-center justify-between">
-                <div>
-                  <p className="text-sm truncate">{movie.title || 'Untitled'}</p>
-                  <p className="text-xs text-muted-foreground">Archived {movie.archived_at ? formatDate(movie.archived_at) : ''}</p>
-                </div>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" className="text-destructive">Delete</Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete archived movie?</AlertDialogTitle>
-                      <AlertDialogDescription>This will remove all remaining data for this movie.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => handleDelete(movie.id)} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </CardContent>
-            </Card>
+            <div key={movie.id} className="flex items-center justify-between py-3.5 border-b border-border/20 opacity-50">
+              <div>
+                <p className="text-sm truncate">{movie.title || 'Untitled'}</p>
+                <p className="text-[11px] text-muted-foreground">Archived {movie.archived_at ? formatDate(movie.archived_at) : ''}</p>
+              </div>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="sm" className="text-destructive text-xs">Delete</Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete archived movie?</AlertDialogTitle>
+                    <AlertDialogDescription>This will remove all remaining data for this movie.</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => handleDelete(movie.id)} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           ))}
         </>
       )}
@@ -589,80 +595,51 @@ const EventPassCard = ({
   const isDone = pass.status === 'used' || pass.status === 'expired' || (pass.status === 'active' && isExpired);
 
   return (
-    <div className={`flex items-center justify-between border rounded-lg p-3 transition-colors ${cfg.bg} ${isDone ? 'opacity-50 border-border' : pass.status === 'active' ? 'border-green-400/30' : 'border-border'}`}>
+    <div className={`flex items-center justify-between py-4 border-b border-border/30 ${isDone ? 'opacity-40' : ''}`}>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant="outline" className={`text-xs ${cfg.color}`}>
-            {cfg.label}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
+        <div className="flex items-center gap-3 flex-wrap mb-0.5">
+          <span className={`text-xs font-semibold ${cfg.color.split(' ')[0]}`}>{cfg.label}</span>
+          <span className="text-[11px] text-muted-foreground">
             Purchased {formatDate(pass.purchase_date)}
           </span>
         </div>
 
-        {/* Active with time remaining */}
         {pass.status === 'active' && pass.expires_at && !isExpired && (
-          <div className="flex items-center gap-1.5 mt-1.5">
+          <div className="flex items-center gap-1.5 mt-1">
             <Clock className="w-3 h-3 text-green-400 shrink-0" />
             <span className="text-xs font-mono text-green-400">{countdown}</span>
-            <span className="text-xs text-muted-foreground">remaining</span>
+            <span className="text-[11px] text-muted-foreground">remaining</span>
           </div>
         )}
-
-        {/* Active with activation date */}
         {pass.status === 'active' && pass.activation_date && !isExpired && (
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Activated {formatDate(pass.activation_date)}
-          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Activated {formatDate(pass.activation_date)}</p>
         )}
-
-        {/* Active but countdown reached zero */}
         {pass.status === 'active' && isExpired && (
-          <p className="text-xs text-red-400 mt-1">
-            This pass has expired. Access has been revoked.
-          </p>
+          <p className="text-[11px] text-red-400 mt-0.5">This pass has expired.</p>
         )}
-
-        {/* Pending: waiting for user to activate */}
         {pass.status === 'pending' && (
-          <p className="text-xs text-muted-foreground mt-1">
-            Ready to activate. Must be activated by {formatDate(pass.max_activation_date)}.
-          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Activate before {formatDate(pass.max_activation_date)}</p>
         )}
-
-        {/* Used */}
         {pass.status === 'used' && (
-          <p className="text-xs text-muted-foreground mt-1">
-            This pass has been fully used.
-            {pass.activation_date && ` Activated ${formatDate(pass.activation_date)}.`}
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Used.{pass.activation_date && ` Activated ${formatDate(pass.activation_date)}.`}
           </p>
         )}
-
-        {/* Expired (never activated or activation window passed) */}
         {pass.status === 'expired' && (
-          <p className="text-xs text-muted-foreground mt-1">
-            {pass.activation_date
-              ? `Expired after 48h. Activated ${formatDate(pass.activation_date)}.`
-              : 'Activation window expired. This pass was never activated.'
-            }
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {pass.activation_date ? 'Expired 48h after activation.' : 'Never activated.'}
           </p>
         )}
       </div>
 
-      {/* Only show Activate button for pending passes */}
       {pass.status === 'pending' && (
-        <Button
-          size="sm"
+        <button
           onClick={() => onActivate(pass.id)}
           disabled={activatingPassId === pass.id}
-          className="shrink-0 ml-3"
+          className="shrink-0 ml-4 inline-flex items-center justify-center bg-primary text-primary-foreground px-4 py-2 rounded-lg text-xs font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60"
         >
-          {activatingPassId === pass.id ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            'Activate'
-          )}
-        </Button>
+          {activatingPassId === pass.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Activate'}
+        </button>
       )}
     </div>
   );
@@ -756,123 +733,114 @@ const BillingTab = () => {
   const tierConfig = TIER_LIMITS[tier];
 
   return (
-    <div className="space-y-6">
+    <div>
       {/* Current Plan */}
-      <Card className="border-border">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Shield className="w-5 h-5" />
-            Current Plan
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-3">
-            <TierBadge tier={tier} />
-            {isExpiring && expiresAt && (
-              <span className="text-xs text-yellow-400">
-                Grace period until {expiresAt.toLocaleDateString()}
-              </span>
-            )}
-          </div>
+      <div className="pb-8 border-b border-border/30">
+        <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-5">Current Plan</p>
 
-          {/* Subscription billing info */}
-          {subInfo && (
-            <div className="flex flex-wrap items-center gap-4 text-sm">
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <CalendarDays className="w-3.5 h-3.5" />
-                <span>
-                  {subInfo.cancel_at_period_end
-                    ? `Cancels on ${new Date(subInfo.current_period_end * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
-                    : `Next payment: ${new Date(subInfo.current_period_end * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
-                  }
-                </span>
-              </div>
-              {subInfo.interval && (
-                <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                  Billed {subInfo.interval === 'year' ? 'yearly' : 'monthly'}
+        <div className="flex items-start justify-between gap-4 mb-6">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <TierBadge tier={tier} />
+              {isExpiring && expiresAt && (
+                <span className="text-xs text-yellow-400">
+                  Grace period until {expiresAt.toLocaleDateString()}
                 </span>
               )}
             </div>
-          )}
-
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
-            <div>
-              <p className="text-muted-foreground text-xs">Listeners</p>
-              <p className="font-medium">{hasUnlimitedListeners ? 'Unlimited' : maxListeners}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-xs">Movies</p>
-              <p className="font-medium">{concurrentMovies === -1 ? 'Unlimited' : concurrentMovies}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-xs">Quality</p>
-              <p className="font-medium">{maxQuality}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-xs">Storage</p>
-              <p className="font-medium">{storageLabel}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground text-xs">Retention</p>
-              <p className="font-medium">{retention.replace('_', ' ')}</p>
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className="flex flex-col sm:flex-row gap-2">
-            {isPaid && profile?.stripe_customer_id ? (
-              <Button variant="outline" onClick={handleManageBilling} disabled={portalLoading}>
-                {portalLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : (
-                  <><ExternalLink className="w-4 h-4 mr-2" />Manage Billing</>
+            {subInfo && (
+              <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  {subInfo.cancel_at_period_end
+                    ? `Cancels ${new Date(subInfo.current_period_end * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+                    : `Renews ${new Date(subInfo.current_period_end * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+                  }
+                </span>
+                {subInfo.interval && (
+                  <span className="uppercase tracking-wide text-[10px]">
+                    Billed {subInfo.interval === 'year' ? 'yearly' : 'monthly'}
+                  </span>
                 )}
-              </Button>
-            ) : null}
-            <Button variant={isPaid ? 'ghost' : 'default'} asChild>
-              <Link to="/pricing">{isPaid ? 'Change Plan' : 'Upgrade Plan'}</Link>
-            </Button>
+              </div>
+            )}
           </div>
-        </CardContent>
-      </Card>
+          <div className="flex items-center gap-4 shrink-0">
+            {isPaid && profile?.stripe_customer_id && (
+              <button
+                onClick={handleManageBilling}
+                disabled={portalLoading}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5 underline underline-offset-4 disabled:opacity-60"
+              >
+                {portalLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
+                Manage Billing
+              </button>
+            )}
+            <Link
+              to="/pricing"
+              className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-xs font-semibold hover:bg-primary/90 transition-colors"
+            >
+              {isPaid ? 'Change Plan' : 'Upgrade Plan'}
+            </Link>
+          </div>
+        </div>
+
+        {/* Plan features strip */}
+        <div className="flex flex-wrap divide-x divide-border/30">
+          {[
+            { label: 'Listeners', value: hasUnlimitedListeners ? 'Unlimited' : String(maxListeners) },
+            { label: 'Movies',    value: concurrentMovies === -1 ? 'Unlimited' : String(concurrentMovies) },
+            { label: 'Quality',   value: maxQuality },
+            { label: 'Storage',   value: storageLabel },
+            { label: 'Retention', value: retention.replace('_', ' ') },
+          ].map(item => (
+            <div key={item.label} className="px-6 first:pl-0 py-1">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-0.5">{item.label}</p>
+              <p className="text-sm font-semibold text-foreground">{item.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Event Passes */}
-      <Card className="border-border">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Ticket className="w-5 h-5" />
-            Event Passes
-          </CardTitle>
-          <CardDescription>One-time 48-hour access passes</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {passesLoading ? (
-            <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin" /></div>
-          ) : passesError ? (
-            <div className="text-center py-6">
-              <p className="text-destructive text-sm mb-2">{passesError}</p>
-              <Button variant="outline" size="sm" onClick={fetchPasses}>Retry</Button>
-            </div>
-          ) : passes.length === 0 ? (
-            <div className="text-center py-6">
-              <p className="text-muted-foreground text-sm mb-3">No event passes purchased yet.</p>
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/pricing">Buy Event Pass</Link>
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {passes.map(pass => (
-                <EventPassCard
-                  key={pass.id}
-                  pass={pass}
-                  activatingPassId={activatingPassId}
-                  onActivate={handleActivatePass}
-                />
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="pt-8">
+        <div className="flex items-center justify-between mb-5">
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary">Event Passes</p>
+          <Link
+            to="/pricing"
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
+          >
+            Buy Pass
+          </Link>
+        </div>
+
+        {passesLoading ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : passesError ? (
+          <div className="py-8 text-center">
+            <p className="text-sm text-muted-foreground mb-3">{passesError}</p>
+            <button onClick={fetchPasses} className="text-xs text-primary underline underline-offset-4">Retry</button>
+          </div>
+        ) : passes.length === 0 ? (
+          <div className="py-8">
+            <p className="text-sm text-muted-foreground">No event passes yet.</p>
+            <p className="text-[11px] text-muted-foreground/60 mt-0.5">One-time 48-hour access passes for a single screening.</p>
+          </div>
+        ) : (
+          <div>
+            {passes.map(pass => (
+              <EventPassCard
+                key={pass.id}
+                pass={pass}
+                activatingPassId={activatingPassId}
+                onActivate={handleActivatePass}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -1037,39 +1005,29 @@ const SettingsTab = () => {
     }
   };
 
-  // Helper to render a locked overlay on a section
-  const LockedOverlay = ({ requiredTier }: { requiredTier: string }) => (
-    <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded-lg flex flex-col items-center justify-center z-10">
-      <Lock className="w-5 h-5 text-muted-foreground mb-1.5" />
-      <p className="text-xs text-muted-foreground font-medium">Requires {requiredTier}</p>
-      <Button variant="outline" size="sm" asChild className="mt-2">
-        <Link to="/pricing"><Crown className="w-3 h-3 mr-1" />Upgrade</Link>
-      </Button>
-    </div>
-  );
-
   // Determine the preview watermark: image or text
   const previewImageUrl = watermarkImageUrl || null;
   const previewText = watermarkText || 'SilentCine';
   const hasAnyWatermark = !!previewImageUrl || !!previewText;
 
   return (
-    <div className="space-y-6">
-      {/* Profile */}
-      <Card className="border-border">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Pencil className="w-5 h-5" />
-            Profile
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" value={user?.email ?? ''} disabled className="opacity-60" />
+    <div>
+
+      {/* ── Profile ── */}
+      <section className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-12 py-8 border-b border-border/30">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-1">Profile</p>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+            Your display name is shown to viewers during a screening.
+          </p>
+        </div>
+        <div className="space-y-4 max-w-sm">
+          <div className="space-y-1.5">
+            <Label htmlFor="email" className="text-xs uppercase tracking-wide text-muted-foreground">Email</Label>
+            <Input id="email" value={user?.email ?? ''} disabled className="opacity-50" />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="displayName">Display Name</Label>
+          <div className="space-y-1.5">
+            <Label htmlFor="displayName" className="text-xs uppercase tracking-wide text-muted-foreground">Display Name</Label>
             <Input
               id="displayName"
               value={displayName}
@@ -1077,27 +1035,36 @@ const SettingsTab = () => {
               placeholder="Your name"
             />
           </div>
-          <Button onClick={handleSaveProfile} disabled={saving}>
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save Changes'}
-          </Button>
-        </CardContent>
-      </Card>
+          <button
+            onClick={handleSaveProfile}
+            disabled={saving}
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save Changes'}
+          </button>
+        </div>
+      </section>
 
-      {/* Watermark — unified card (Pro feature, logo upload requires Enterprise) */}
-      <Card className="border-border relative">
-        {!isPro && <LockedOverlay requiredTier="Pro" />}
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Type className="w-5 h-5" />
-            Watermark
-            {!isPro && <Badge variant="outline" className="text-xs ml-auto">Pro</Badge>}
-          </CardTitle>
-          <CardDescription>Customize the watermark shown on your screenings</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
+      {/* ── Watermark ── */}
+      <section className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-12 py-8 border-b border-border/30">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-1">Watermark</p>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+            Customize the watermark overlaid on your screenings.
+          </p>
+          {!isPro && (
+            <div className="flex items-center gap-1.5 mt-3">
+              <Lock className="w-3 h-3 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Pro feature.</span>
+              <Link to="/pricing" className="text-xs text-primary underline underline-offset-2 hover:text-primary/80 transition-colors">Upgrade</Link>
+            </div>
+          )}
+        </div>
+        <div className="space-y-6 max-w-sm">
+
           {/* Custom text */}
-          <div className="space-y-2">
-            <Label className="text-sm">Custom Text</Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Custom Text</Label>
             <Input
               value={watermarkText}
               onChange={e => setWatermarkText(e.target.value)}
@@ -1105,22 +1072,16 @@ const SettingsTab = () => {
               maxLength={40}
               disabled={!isPro}
             />
-            <p className="text-xs text-muted-foreground">Replace the default "SilentCine" watermark with your own text.</p>
+            <p className="text-xs text-muted-foreground">Replaces the default "SilentCine" text.</p>
           </div>
 
-          <Separator />
-
           {/* Logo image — Enterprise only */}
-          <div className="space-y-2 relative">
-            {isPro && !isEnterpriseUser && (
-              <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] rounded-lg flex flex-col items-center justify-center z-10 -m-2 p-2">
-                <Lock className="w-4 h-4 text-muted-foreground mb-1" />
-                <p className="text-xs text-muted-foreground font-medium">Requires Enterprise</p>
-              </div>
-            )}
-            <Label className="text-sm flex items-center gap-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-2">
               Logo Image
-              {!isEnterpriseUser && <Badge variant="outline" className="text-[10px] py-0">Enterprise</Badge>}
+              {!isEnterpriseUser && (
+                <span className="text-[10px] text-muted-foreground/60 normal-case tracking-normal font-normal">Enterprise</span>
+              )}
             </Label>
             <div className="flex gap-2">
               <Input
@@ -1148,32 +1109,36 @@ const SettingsTab = () => {
                 {uploadingImage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Max 2 MB. Leave empty for no watermark (white-label).</p>
+            <p className="text-xs text-muted-foreground">Max 2 MB. Leave empty to remove the watermark entirely.</p>
           </div>
 
-          <Separator />
-
           {/* Position picker */}
-          <div className="space-y-2">
-            <Label className="text-sm">Position</Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Position</Label>
             <div className="flex flex-wrap gap-2">
               {POSITION_OPTIONS.map(opt => (
-                <Button
+                <button
                   key={opt.value}
-                  variant={watermarkPosition === opt.value ? 'default' : 'outline'}
-                  size="sm"
                   onClick={() => setWatermarkPosition(opt.value)}
                   disabled={!isPro}
+                  className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-40 ${
+                    watermarkPosition === opt.value
+                      ? 'bg-primary text-primary-foreground border-primary'
+                      : 'border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground'
+                  }`}
                 >
                   {opt.label}
-                </Button>
+                </button>
               ))}
             </div>
           </div>
 
-          {/* Opacity slider */}
+          {/* Opacity */}
           <div className="space-y-2">
-            <Label className="text-sm">Opacity: {Math.round(watermarkOpacity * 100)}%</Label>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Opacity</Label>
+              <span className="text-xs text-muted-foreground tabular-nums">{Math.round(watermarkOpacity * 100)}%</span>
+            </div>
             <input
               type="range"
               min="0.05"
@@ -1186,9 +1151,12 @@ const SettingsTab = () => {
             />
           </div>
 
-          {/* Size slider */}
+          {/* Size */}
           <div className="space-y-2">
-            <Label className="text-sm">Size: {Math.round(watermarkSize * 100)}%</Label>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Size</Label>
+              <span className="text-xs text-muted-foreground tabular-nums">{Math.round(watermarkSize * 100)}%</span>
+            </div>
             <input
               type="range"
               min="0.5"
@@ -1203,14 +1171,12 @@ const SettingsTab = () => {
 
           {/* Live preview */}
           {hasAnyWatermark && (
-            <div className="space-y-2">
-              <Label className="text-sm">Preview</Label>
+            <div className="space-y-1.5">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Preview</Label>
               <div className="relative w-full aspect-video bg-zinc-900 rounded-lg overflow-hidden border border-border">
-                {/* Fake video placeholder */}
                 <div className="absolute inset-0 flex items-center justify-center text-zinc-700">
                   <Film className="w-16 h-16" />
                 </div>
-                {/* Watermark preview */}
                 <div className={`absolute ${POSITION_CSS[watermarkPosition]} pointer-events-none select-none`}>
                   {previewImageUrl ? (
                     <img
@@ -1234,24 +1200,33 @@ const SettingsTab = () => {
           )}
 
           {isPro && (
-            <Button size="sm" onClick={handleSaveProfile} disabled={saving}>
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
-            </Button>
+            <button
+              onClick={handleSaveProfile}
+              disabled={saving}
+              className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save'}
+            </button>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      {/* Custom Branding CSS — Enterprise feature */}
-      <Card className="border-border relative">
-        {!isEnterpriseUser && <LockedOverlay requiredTier="Enterprise" />}
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            Custom Branding CSS
-            {!isEnterpriseUser && <Badge variant="outline" className="text-xs ml-auto">Enterprise</Badge>}
-          </CardTitle>
-          <CardDescription>Inject a custom CSS file for full white-label branding</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      {/* ── Custom Branding CSS ── */}
+      <section className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-12 py-8 border-b border-border/30">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-1">Custom Branding</p>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+            Inject a CSS file for full white-label branding.
+          </p>
+          {!isEnterpriseUser && (
+            <div className="flex items-center gap-1.5 mt-3">
+              <Lock className="w-3 h-3 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Enterprise only.</span>
+              <Link to="/pricing" className="text-xs text-primary underline underline-offset-2 hover:text-primary/80 transition-colors">Upgrade</Link>
+            </div>
+          )}
+        </div>
+        <div className="space-y-3 max-w-sm">
           <Input
             type="url"
             value={brandingUrl}
@@ -1260,78 +1235,82 @@ const SettingsTab = () => {
             disabled={!isEnterpriseUser}
           />
           <p className="text-xs text-muted-foreground">
-            Host the CSS file on your own domain (HTTPS required). It will be loaded after the default theme, so your overrides take effect automatically.
+            Hosted on your domain (HTTPS). Loaded after the default theme — your overrides apply automatically.
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
             {isEnterpriseUser && (
-              <Button size="sm" onClick={handleSaveProfile} disabled={saving}>
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
-              </Button>
+              <button
+                onClick={handleSaveProfile}
+                disabled={saving}
+                className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Save'}
+              </button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              asChild
+            <a
+              href="/branding-template.css"
+              download="branding-template.css"
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
             >
-              <a href="/branding-template.css" download="branding-template.css">
-                <Download className="w-4 h-4 mr-1.5" />
-                Download Template
-              </a>
-            </Button>
+              <Download className="w-3.5 h-3.5" />
+              Download Template
+            </a>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      {/* Change Password */}
-      <Card className="border-border">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <KeyRound className="w-5 h-5" />
-            Change Password
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
-            <div className="space-y-2">
-              <Label htmlFor="newPassword">New Password</Label>
-              <Input
-                id="newPassword"
-                type="password"
-                value={newPassword}
-                onChange={e => setNewPassword(e.target.value)}
-                placeholder="At least 6 characters"
-                minLength={6}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm Password</Label>
-              <Input
-                id="confirmPassword"
-                type="password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                placeholder="Repeat password"
-                minLength={6}
-                required
-              />
-            </div>
-            <Button type="submit" variant="outline" disabled={passwordLoading}>
-              {passwordLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Update Password'}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+      {/* ── Password ── */}
+      <section className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-12 py-8 border-b border-border/30">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-primary mb-1">Password</p>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+            Choose a new password for your account.
+          </p>
+        </div>
+        <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+          <div className="space-y-1.5">
+            <Label htmlFor="newPassword" className="text-xs uppercase tracking-wide text-muted-foreground">New Password</Label>
+            <Input
+              id="newPassword"
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              placeholder="At least 6 characters"
+              minLength={6}
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="confirmPassword" className="text-xs uppercase tracking-wide text-muted-foreground">Confirm Password</Label>
+            <Input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={e => setConfirmPassword(e.target.value)}
+              placeholder="Repeat password"
+              minLength={6}
+              required
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={passwordLoading}
+            className="inline-flex items-center gap-2 border border-border text-foreground px-5 py-2.5 rounded-lg text-sm font-medium hover:border-foreground/40 transition-colors disabled:opacity-60"
+          >
+            {passwordLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Update Password'}
+          </button>
+        </form>
+      </section>
 
-      {/* Danger Zone */}
-      <Card className="border-destructive/30">
-        <CardHeader>
-          <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle>
-          <CardDescription>
-            Permanently delete your account and all associated data. This cannot be undone.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      {/* ── Danger Zone ── */}
+      <section className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-12 py-8 pl-5 border-l-2 border-destructive/50">
+        <div>
+          <p className="text-[11px] font-semibold tracking-[0.2em] uppercase text-destructive mb-1">Danger Zone</p>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-2">
+            Permanently delete your account and all data. This cannot be undone.
+          </p>
+        </div>
+        <div>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="destructive">Delete Account</Button>
@@ -1357,8 +1336,9 @@ const SettingsTab = () => {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
+
     </div>
   );
 };
